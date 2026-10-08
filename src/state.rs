@@ -8,9 +8,9 @@ use crate::{
     settings::Settings,
     teams::{AccountConfig, Command, Event, LoadKind, Media, Operation, Worker},
 };
-use gpui_kit::{Image, ImageFormat};
+use gpui_kit::{Image, ImageFormat, RenderImage};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::Arc,
     time::Instant,
 };
@@ -18,6 +18,8 @@ use time::UtcOffset;
 
 /// Profile photos need User.ReadBasic.All. Enable together with the photo `SCOPES` in teams.rs.
 const PROFILE_PHOTOS: bool = false;
+/// Decoded message images kept in memory (and GPU textures). The open conversation is exempt.
+const MEDIA_BUDGET: usize = 48 * 1024 * 1024;
 
 #[derive(PartialEq)]
 pub(crate) enum Mode {
@@ -86,11 +88,19 @@ pub(crate) struct ChatState {
     pub can_save_settings: bool,
     /// Profile photos by Graph user ID; `None` while loading or when the person has none.
     pub photos: HashMap<String, Option<Arc<Image>>>,
-    /// Message images by URL; `None` while loading or when unavailable. Shared with renderers.
-    pub media: Arc<HashMap<String, Option<Arc<Image>>>>,
+    /// Message images by URL, decoded at display size; `None` while loading or when unavailable.
+    /// Shared with renderers.
+    pub media: Arc<HashMap<String, Option<Arc<RenderImage>>>>,
     pub previews: Arc<HashMap<String, Option<Preview>>>,
-    /// Chat revision whose images/links were last requested.
-    media_scanned: HashMap<String, u64>,
+    /// Loaded images, oldest first, with their decoded size; bounded by `MEDIA_BUDGET`.
+    media_order: VecDeque<(String, usize)>,
+    media_bytes: usize,
+    /// Image URLs of the open conversation, never evicted while it is open.
+    media_wanted: HashSet<String>,
+    /// Chat and revision `media_wanted` was computed for.
+    media_scanned: Option<(String, u64)>,
+    /// Evicted images whose GPU textures the window must release.
+    pub evicted: Vec<Arc<RenderImage>>,
     /// Set when media arrives so transcripts remeasure rows that display it.
     pub media_changed: bool,
     /// Push arrival per new message ID, for the delivery trace only.
@@ -186,7 +196,11 @@ impl ChatState {
             photos: HashMap::new(),
             media: Arc::default(),
             previews: Arc::default(),
-            media_scanned: HashMap::new(),
+            media_order: VecDeque::new(),
+            media_bytes: 0,
+            media_wanted: HashSet::new(),
+            media_scanned: None,
+            evicted: Vec::new(),
             media_changed: false,
             push_times: HashMap::new(),
         }
@@ -785,15 +799,20 @@ impl ChatState {
                 self.photos.insert(user_id, image);
             }
             Event::Image { url, image } => {
-                let image = image.and_then(|(mime, bytes)| {
-                    ImageFormat::from_mime_type(&mime)
-                        .map(|format| Arc::new(Image::from_bytes(format, bytes)))
+                let image = image.map(|(image, size)| {
+                    self.media_order.push_back((url.clone(), size));
+                    self.media_bytes += size;
+                    image
                 });
                 Arc::make_mut(&mut self.media).insert(url, image);
+                self.evict_media();
                 self.media_changed = true;
             }
             Event::Preview { url, preview } => {
                 if let Some(image) = preview.as_ref().and_then(|preview| preview.image.clone()) {
+                    if self.media_wanted.contains(&url) {
+                        self.media_wanted.insert(image.clone());
+                    }
                     self.request_media(image, false);
                 }
                 Arc::make_mut(&mut self.previews).insert(url, preview);
@@ -900,7 +919,27 @@ impl ChatState {
         }
     }
 
-    /// Requests images and link previews of the open conversation once per chat revision.
+    /// Drops the oldest decoded images beyond `MEDIA_BUDGET`, keeping the open conversation's.
+    /// Evicted URLs are fetched again when their conversation is reopened.
+    fn evict_media(&mut self) {
+        let mut kept = VecDeque::new();
+        while self.media_bytes > MEDIA_BUDGET
+            && let Some((url, size)) = self.media_order.pop_front()
+        {
+            if self.media_wanted.contains(&url) {
+                kept.push_back((url, size));
+                continue;
+            }
+            self.media_bytes -= size;
+            if let Some(Some(image)) = Arc::make_mut(&mut self.media).remove(&url) {
+                self.evicted.push(image);
+            }
+        }
+        kept.append(&mut self.media_order);
+        self.media_order = kept;
+    }
+
+    /// Requests images and link previews of the open conversation when it or its messages change.
     fn scan_media(&mut self) {
         let Some(chat) = self
             .selected
@@ -909,11 +948,11 @@ impl ChatState {
         else {
             return;
         };
-        if self.media_scanned.get(&chat.summary.id) == Some(&chat.revision) {
+        let key = (chat.summary.id.clone(), chat.revision);
+        if self.media_scanned.as_ref() == Some(&key) {
             return;
         }
-        self.media_scanned
-            .insert(chat.summary.id.clone(), chat.revision);
+        self.media_scanned = Some(key);
         let previews = !self.prefs.hide_link_previews;
         let wanted: Vec<_> = chat
             .messages
@@ -926,6 +965,15 @@ impl ChatState {
                     .filter(|_| previews)
                     .map(|url| (url, true));
                 images.chain(link)
+            })
+            .collect();
+        self.media_wanted = wanted
+            .iter()
+            .flat_map(|(url, preview)| {
+                let image = preview
+                    .then(|| self.previews.get(url).cloned().flatten()?.image)
+                    .flatten();
+                std::iter::once(url.clone()).chain(image)
             })
             .collect();
         for (url, preview) in wanted {

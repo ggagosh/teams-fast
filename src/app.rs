@@ -302,6 +302,9 @@ impl TeamsFast {
                     .update(cx, |scroll, cx| scroll.scroll_to_end(cx));
             }
         }
+        for image in self.state.evicted.drain(..) {
+            cx.drop_image(image, Some(window));
+        }
         // Loaded images and link previews change row heights.
         if std::mem::take(&mut self.state.media_changed) {
             for transcript in self.transcripts.values() {

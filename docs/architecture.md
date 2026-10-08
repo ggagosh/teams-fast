@@ -40,6 +40,15 @@ Replies (`messageReference` attachments) render as a quote above the text. Share
 
 Reactions come from Graph `reactions`, grouped per type, and render as Kit `BubbleReactions` chips. Clicking a chip or choosing a reaction in the message's context menu toggles it immediately, then calls `setReaction`/`unsetReaction` (delegated `ChatMessage.Send`) on the send lane and reloads that message. Legacy names (`like`, `heart`, …) map to emoji; removal sends the original `reactionType`.
 
+## Images and memory
+
+The media worker decodes message and link-preview images once, off the UI thread (`src/thumbnail.rs`). It scales them to at most 960 device pixels on the longest side and hands GPUI ready BGRA frames. Animated GIFs keep their animation up to 12 MB decoded; larger ones show their first frame. Images that haven't loaded render as nothing, so GPUI never fetches and caches a full-size original itself. Decoded images are kept up to 48 MB, oldest first, and the open conversation's images are exempt. Evicted images release their GPU textures and are fetched again when their conversation is reopened. Profile photos are small and stay as encoded images.
+
+Measured on the owner's account, comparable but not identical (window size and the open chat differed):
+- before: 253 MB footprint, about 38 MB of it the frames of one full-resolution GIF;
+- after: 97 MB;
+- the official Teams app on the same machine: about 2.3 GB across its processes.
+
 ## Sending and storage
 
 Enter submits and Shift+Enter adds a newline. The message appears in the timeline immediately (dimmed, "Sending…") and the composer clears, so several messages can be queued; they are sent in order. Microsoft's response replaces the local placeholder. On failure or timeout the bubble is marked "Not confirmed" and its text is restored to an empty composer; a timeout can still mean delivery, so nothing is resent automatically. The in-flight text is not persisted, so quitting during a send can lose it. Message POSTs are never automatically repeated. Messages merge by Graph ID and sort using parsed RFC 3339 timestamps.

@@ -708,7 +708,7 @@ impl TeamsFast {
 struct Rows {
     messages: Rc<Vec<Message>>,
     photos: HashMap<String, Option<Arc<Image>>>,
-    media: Arc<HashMap<String, Option<Arc<Image>>>>,
+    media: Arc<HashMap<String, Option<Arc<RenderImage>>>>,
     previews: Arc<HashMap<String, Option<Preview>>>,
     offset: UtcOffset,
     chat_id: String,
@@ -768,8 +768,10 @@ fn message(rows: &Rows, index: usize, cx: &mut App) -> AnyElement {
         (!value.text.trim().is_empty() || !value.images.is_empty()).then(|| {
             TextView::html(body_id, value.html.clone())
                 .image_source(move |uri| match media.get(uri.as_ref()) {
-                    Some(Some(image)) => ImageSource::Image(image.clone()),
-                    _ => ImageSource::from(uri.clone()),
+                    Some(Some(image)) => ImageSource::Render(image.clone()),
+                    // Not loaded yet: show nothing rather than let GPUI fetch and keep the
+                    // full-size original; the worker's display-size copy replaces it.
+                    _ => ImageSource::Custom(Arc::new(|_, _| None)),
                 })
                 .text_size(px(14.))
                 .into_any_element()

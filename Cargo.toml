@@ -36,6 +36,8 @@ hmac = "0.12"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 base64 = "0.22"
+# Same version GPUI uses; decodes chat images at display size (src/thumbnail.rs).
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

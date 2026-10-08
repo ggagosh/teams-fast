@@ -184,10 +184,11 @@ pub(crate) enum Event {
         user_id: String,
         photo: Option<(String, Vec<u8>)>,
     },
-    /// A message image by URL; `None` when it could not be loaded.
+    /// A message image by URL, decoded at display size with its byte size; `None` when it could
+    /// not be loaded.
     Image {
         url: String,
-        image: Option<(String, Vec<u8>)>,
+        image: Option<(Arc<gpui_kit::RenderImage>, usize)>,
     },
     Preview {
         url: String,
@@ -879,7 +880,8 @@ fn spawn_media_lane(
                         image: match checked_graph_url(&url) {
                             Ok(graph_url) => fetch_graph_image(&graph, session(), graph_url),
                             Err(_) => web.get(&url).send().ok().and_then(read_image),
-                        },
+                        }
+                        .and_then(|(mime, bytes)| crate::thumbnail::decode(&mime, &bytes)),
                         url,
                     },
                     Media::Preview(url) => Event::Preview {
