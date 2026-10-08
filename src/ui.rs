@@ -11,7 +11,7 @@ use crate::{
 use gpui_kit::{
     base::TextView,
     component::{
-        ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, TitleBar,
+        ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable,
         attachment::{
             Attachment, AttachmentContent, AttachmentDescription, AttachmentMedia, AttachmentTitle,
         },
@@ -62,7 +62,6 @@ impl Render for TeamsFast {
             .id("teamsfast")
             .key_context("TeamsFast")
             .size_full()
-            .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .text_size(px(14.))
             .on_action(
@@ -75,35 +74,42 @@ impl Render for TeamsFast {
                 cx.listener(|this, _: &NewConversation, window, cx| this.open_new_chat(window, cx)),
             )
             .on_action(cx.listener(|this, _: &Refresh, window, cx| this.refresh(window, cx)))
-            .child(
-                TitleBar::new().child(
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .pr_3()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("TeamsFast"),
-                        )
-                        .child(
-                            Button::new("preferences")
-                                .ghost()
-                                .small()
-                                .icon(IconName::Settings)
-                                .tooltip("Settings · ⌘,")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_settings(window, cx)
-                                })),
-                        ),
-                ),
-            )
             .child(div().flex_1().min_h_0().child(body))
     }
 }
 
+/// Height of the unified title row; the traffic lights are centered in it (see main.rs).
+const TITLE_HEIGHT: Pixels = px(56.);
+
 impl TeamsFast {
+    /// A unified title-bar region: dragging moves the window and a double click follows the
+    /// system setting (zoom or minimize). Buttons inside stop the press from reaching it.
+    fn title_area(&self, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
+        div()
+            .id(id)
+            .flex_shrink_0()
+            .h(TITLE_HEIGHT)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, _| {
+                    if event.click_count == 2 {
+                        window.titlebar_double_click();
+                    } else {
+                        this.title_drag = true;
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.title_drag = false),
+            )
+            .on_mouse_move(cx.listener(|this, _, window, _| {
+                if std::mem::take(&mut this.title_drag) {
+                    window.start_window_move();
+                }
+            }))
+    }
+
     fn welcome(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let configured = crate::teams::validate_registration(
             &self.state.prefs.client_id,
@@ -199,50 +205,57 @@ impl TeamsFast {
                 )
                 .into_any_element()
         };
+        let title = self.title_area("welcome-title", cx).w_full();
+        let page =
+            v_flex()
+                .flex_1()
+                .w_full()
+                .items_center()
+                .justify_center()
+                .gap_5()
+                .child(
+                    v_flex()
+                        .items_center()
+                        .gap_1()
+                        .child(img(logo()).size(px(112.)))
+                        .child(
+                            div()
+                                .text_2xl()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("TeamsFast"),
+                        )
+                        .child(div().text_color(muted).child(
+                            "Microsoft Teams chats, fast. Use your work or school account.",
+                        )),
+                )
+                .when_some(self.state.error.clone(), |column, error| {
+                    column.child(
+                        div()
+                            .max_w(px(420.))
+                            .text_sm()
+                            .text_color(cx.theme().danger)
+                            .child(error),
+                    )
+                })
+                .child(action)
+                .when(signing, |column| {
+                    column.child(
+                        Button::new("cancel-sign-in")
+                            .ghost()
+                            .small()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.state.use_demo(false);
+                                this.synchronize(window, cx);
+                                cx.notify();
+                            })),
+                    )
+                });
         v_flex()
             .size_full()
-            .items_center()
-            .justify_center()
-            .gap_5()
-            .child(
-                v_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_2xl()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("TeamsFast"),
-                    )
-                    .child(
-                        div()
-                            .text_color(muted)
-                            .child("Microsoft Teams chats, fast. Use your work or school account."),
-                    ),
-            )
-            .when_some(self.state.error.clone(), |column, error| {
-                column.child(
-                    div()
-                        .max_w(px(420.))
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(error),
-                )
-            })
-            .child(action)
-            .when(signing, |column| {
-                column.child(
-                    Button::new("cancel-sign-in")
-                        .ghost()
-                        .small()
-                        .label("Cancel")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.state.use_demo(false);
-                            this.synchronize(window, cx);
-                            cx.notify();
-                        })),
-                )
-            })
+            .bg(cx.theme().background)
+            .child(title)
+            .child(page)
             .into_any_element()
     }
 
@@ -340,24 +353,25 @@ impl TeamsFast {
             .collect();
         let (status, connected) = self.status();
         let status = status.to_owned();
+        let header = self.title_area("sidebar-title", cx);
         v_flex()
             .size_full()
-            .bg(cx.theme().sidebar)
+            // Translucent over the window's blurred background (vibrancy).
+            .bg(cx.theme().sidebar.opacity(0.72))
             .border_r_1()
             .border_color(cx.theme().border)
             .child(
                 v_flex()
-                    .p_3()
-                    .gap_3()
+                    .px_3()
+                    .pb_3()
+                    .gap_1()
                     .child(
-                        h_flex()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_base()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Chats"),
-                            )
+                        header
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            // Room for the traffic lights.
+                            .pl(px(80.))
                             .child(
                                 h_flex()
                                     .gap_1()
@@ -379,6 +393,16 @@ impl TeamsFast {
                                             .tooltip("New conversation · ⌘N")
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.open_new_chat(window, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("preferences")
+                                            .ghost()
+                                            .small()
+                                            .icon(IconName::Settings)
+                                            .tooltip("Settings · ⌘,")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.open_settings(window, cx)
                                             })),
                                     ),
                             ),
@@ -462,6 +486,8 @@ impl TeamsFast {
         else {
             return v_flex()
                 .size_full()
+                .bg(cx.theme().background)
+                .child(self.title_area("empty-title", cx))
                 .child(self.error_banner(cx))
                 .child(
                     Empty::new()
@@ -541,12 +567,15 @@ impl TeamsFast {
                 })
                 .into_any_element()
         };
+        let header = self.title_area("conversation-title", cx);
         v_flex()
             .size_full()
             .min_w_0()
+            .bg(cx.theme().background)
             .child(
-                h_flex()
-                    .h(px(56.))
+                header
+                    .flex()
+                    .items_center()
                     .px_5()
                     .gap_3()
                     .border_b_1()
@@ -1036,6 +1065,18 @@ fn message(rows: &Rows, index: usize, cx: &mut App) -> AnyElement {
 
 /// Kit 0.7.1 sizes the initials *box* (not its text) for custom pixel sizes, which leaves the
 /// letters low and left. Set the text metrics ourselves so they sit in the middle.
+/// The app icon, shown on the sign-in screen.
+fn logo() -> Arc<Image> {
+    static LOGO: std::sync::OnceLock<Arc<Image>> = std::sync::OnceLock::new();
+    LOGO.get_or_init(|| {
+        Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            include_bytes!("../assets/icon/logo-256.png").to_vec(),
+        ))
+    })
+    .clone()
+}
+
 fn avatar(name: &str, photo: Option<Arc<Image>>, size: Pixels) -> Avatar {
     // Initials come from words, not symbols: "Product & design" is "PD", not "P&".
     let name: Vec<_> = name

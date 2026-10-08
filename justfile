@@ -12,8 +12,9 @@ check:
 # Signed development .app: needed for OS notifications and the Dock badge.
 app *args:
     cargo build --bin teamsfast
-    mkdir -p target/TeamsFast.app/Contents/MacOS
+    mkdir -p target/TeamsFast.app/Contents/MacOS target/TeamsFast.app/Contents/Resources
     cp target/debug/teamsfast target/TeamsFast.app/Contents/MacOS/TeamsFast
+    cp packaging/macos/AppIcon.icns target/TeamsFast.app/Contents/Resources/
     cp packaging/macos/Info.plist target/TeamsFast.app/Contents/Info.plist
     scripts/sign_dev.sh target/TeamsFast.app
     target/TeamsFast.app/Contents/MacOS/TeamsFast "$@"

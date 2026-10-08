@@ -40,6 +40,10 @@ Replies (`messageReference` attachments) render as a quote above the text. Share
 
 Reactions come from Graph `reactions`, grouped per type, and render as Kit `BubbleReactions` chips. Clicking a chip or choosing a reaction in the message's context menu toggles it immediately, then calls `setReaction`/`unsetReaction` (delegated `ChatMessage.Send`) on the send lane and reloads that message. Legacy names (`like`, `heart`, …) map to emoji; removal sends the original `reactionType`.
 
+## Window
+
+The window uses the unified macOS layout. There is no title strip: the titlebar is transparent, the traffic lights sit in the sidebar's 56-point header row (`main.rs`), and the window background is blurred, so the sidebar is translucent like Finder's. Each header row is a drag area drawn by the app (`title_area` in `ui.rs`): dragging moves the window, and a double click follows the system setting. Buttons in a header stop the press, so they don't start a drag. The app icon is `packaging/macos/AppIcon.icns`; its source and the sign-in logo are in `assets/icon/`.
+
 ## Images and memory
 
 The media worker decodes message and link-preview images once, off the UI thread (`src/thumbnail.rs`). It scales them to at most 960 device pixels on the longest side and hands GPUI ready BGRA frames. Animated GIFs keep their animation up to 12 MB decoded; larger ones show their first frame. Images that haven't loaded render as nothing, so GPUI never fetches and caches a full-size original itself. Decoded images are kept up to 48 MB, oldest first, and the open conversation's images are exempt. Evicted images release their GPU textures and are fetched again when their conversation is reopened. Profile photos are small and stay as encoded images.

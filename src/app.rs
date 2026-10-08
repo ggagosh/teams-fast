@@ -35,6 +35,8 @@ pub(crate) struct Transcript {
 
 pub struct TeamsFast {
     pub(crate) state: ChatState,
+    /// A press in a title area that becomes a window drag once the mouse moves.
+    pub(crate) title_drag: bool,
     pub(crate) composer: Entity<TextareaState>,
     pub(crate) search: Entity<InputState>,
     pub(crate) client_id: Entity<InputState>,
@@ -171,6 +173,7 @@ impl TeamsFast {
         });
         let mut app = Self {
             state,
+            title_drag: false,
             composer,
             search,
             client_id,

@@ -2,7 +2,7 @@
 
 extern crate gpui_kit as gpui;
 
-use gpui_kit::{component::TitleBar, *};
+use gpui_kit::*;
 
 fn main() -> anyhow::Result<()> {
     let demo = std::env::args().any(|arg| arg == "--demo")
@@ -47,7 +47,17 @@ fn main() -> anyhow::Result<()> {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(760.), px(520.))),
                 app_id: Some("dev.teamsfast.desktop".into()),
-                ..TitleBar::window_options()
+                // Unified macOS layout: no title strip. The traffic lights sit in the sidebar's
+                // 56 px header row; the app draws its own drag areas (`title_area` in ui.rs).
+                titlebar: Some(TitlebarOptions {
+                    title: None,
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(20.), px(21.))),
+                }),
+                app_owns_titlebar_drag: true,
+                // Translucent sidebar over the desktop, like Finder and Mail.
+                window_background: WindowBackgroundAppearance::Blurred,
+                ..Default::default()
             };
             gpui_kit::open_window(options, cx, |window, cx| {
                 window.set_window_title("TeamsFast");
