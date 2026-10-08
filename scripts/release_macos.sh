@@ -57,6 +57,15 @@ cp packaging/macos/Info.plist "$APP_DIR/Contents/Info.plist"
 mkdir -p "$APP_DIR/Contents/Frameworks"
 FRAMEWORK="$APP_DIR/Contents/Frameworks/Sparkle.framework"
 ditto "$SPARKLE_FRAMEWORK_PATH/Sparkle.framework" "$FRAMEWORK"
+python3 - "$APP_DIR" <<'PY'
+import pathlib, plistlib, sys
+app = pathlib.Path(sys.argv[1])
+version = lambda value: tuple(int(n) for n in (value.split(".") + ["0"] * 3)[:3])
+minimum = plistlib.loads((app / "Contents/Info.plist").read_bytes())["LSMinimumSystemVersion"]
+for path in (app / "Contents/Frameworks").rglob("Info.plist"):
+    requirement = plistlib.loads(path.read_bytes()).get("LSMinimumSystemVersion")
+    assert not requirement or version(requirement) <= version(minimum), f"{path}: requires macOS {requirement}, app promises {minimum}"
+PY
 # Sign executable code inside-out, preserving the upstream helpers' sandbox entitlements.
 SIGN=(--force --options runtime --sign "${MACOS_SIGNING_IDENTITY:--}")
 if [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]; then
@@ -100,10 +109,10 @@ if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
         --ed-key-file - --maximum-deltas 0 \
         --download-url-prefix "https://github.com/ggagosh/teams-fast/releases/download/v$VERSION/" \
         --link "https://github.com/ggagosh/teams-fast/releases/tag/v$VERSION" \
-        -o "$DIST_DIR/appcast-$ARCH.xml" "$WORK/feed"
+        -o "$WORK/appcast-$ARCH.xml" "$WORK/feed"
     printf '%s' "$SPARKLE_PRIVATE_KEY" | "$SPARKLE_FRAMEWORK_PATH/bin/sign_update" \
-        --ed-key-file - --verify "$DIST_DIR/appcast-$ARCH.xml"
-    python3 - "$DIST_DIR/appcast-$ARCH.xml" "$VERSION" "$ARCH" "$ZIP_PATH" <<'PY'
+        --ed-key-file - --verify "$WORK/appcast-$ARCH.xml"
+    python3 - "$WORK/appcast-$ARCH.xml" "$VERSION" "$ARCH" "$ZIP_PATH" <<'PY'
 import pathlib, sys, xml.etree.ElementTree as ET
 feed, version, arch, archive = sys.argv[1:]
 ns = {"s": "http://www.andymatuschak.org/xml-namespaces/sparkle"}
@@ -117,7 +126,9 @@ assert asset is not None and asset.get("url") == expected, "Wrong update asset"
 assert int(asset.get("length")) == pathlib.Path(archive).stat().st_size, "Wrong archive size"
 assert asset.get(f"{{{ns['s']}}}edSignature"), "Missing update signature"
 PY
+    mv "$WORK/appcast-$ARCH.xml" "$DIST_DIR/appcast-$ARCH.xml"
 else
+    rm -f "$DIST_DIR/appcast-$ARCH.xml"
     echo "SPARKLE_PRIVATE_KEY not set: no update feed generated (local package only)."
 fi
 echo "Packaged: $ZIP_PATH"

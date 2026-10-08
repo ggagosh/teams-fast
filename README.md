@@ -14,7 +14,7 @@ The official Teams app runs a web app in a WebView. On a typical Mac it uses abo
 2. Unzip it and move `TeamsFast.app` to **Applications**.
 3. Open it and choose **Sign in with Microsoft**. Your browser handles the sign-in, then your chats appear.
 
-Releases are signed with Developer ID and notarized by Apple. Version 0.4.0 adds automatic updates through Sparkle: install it manually once, then use **TeamsFast → Check for Updates…** or let automatic checks notify you. Update restarts wait for drafts and unconfirmed sends to be saved. To get alerts and the Dock badge, allow TeamsFast in **System Settings → Notifications**.
+Releases are signed with Developer ID and notarized by Apple. Version 0.4.1 adds automatic updates through Sparkle: install it manually once, then use **TeamsFast → Check for Updates…** or let automatic checks notify you. Update restarts wait for drafts and unconfirmed sends to be saved. To get alerts and the Dock badge, allow TeamsFast in **System Settings → Notifications**.
 
 Requirements: macOS 11 or later and a Microsoft 365 work or school account in a tenant where the TeamsFast app registration is allowed. Teams Personal isn't supported by Microsoft's API.
 

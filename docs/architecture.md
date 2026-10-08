@@ -72,7 +72,7 @@ Refresh tokens and the rich-notification key live only in the macOS Keychain (se
 
 ## Application updates and shutdown
 
-Release builds enable the `auto-update` Cargo feature and embed Sparkle 2.10.0 through the safe `sparkle-updater` API. Sparkle owns checks, download, signature verification, native update UI and complete-bundle replacement. Its restart continuation stays on the main thread until the storage worker acknowledges a full snapshot of drafts/unconfirmed sends and saved preferences. Normal Quit and main-window close use the same asynchronous gate. While saving, the main UI is modal and model event application is paused; errors or cancellation leave the app running. Open dialogs must first be finished or dismissed, avoiding implicit loss of edit text.
+Release builds enable the `auto-update` Cargo feature and embed Sparkle 2.9.6 through the safe `sparkle-updater` API. Sparkle owns checks, download, signature verification, native update UI and complete-bundle replacement. Its restart continuation stays on the main thread until the storage worker acknowledges a full snapshot of drafts/unconfirmed sends and saved preferences. Normal Quit and main-window close use the same asynchronous gate. While saving, the main UI is modal and model event application is paused; errors or cancellation leave the app running. Open dialogs must first be finished or dismissed, avoiding implicit loss of edit text.
 
 OS-initiated termination is different: GPUI's `on_app_quit` offers only 200 ms of best-effort cleanup. That hook submits the same snapshot, but cannot veto termination or promise a successful save under forced quit, hung disks or power loss. See [updates](updates.md) for signing, feed publication and acceptance.
 

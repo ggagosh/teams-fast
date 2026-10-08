@@ -2,13 +2,14 @@
 
 ## [Unreleased]
 
-## [0.4.0]
+## [0.4.1]
 
 ### Added
 - Native Sparkle updates: automatic checks/downloads, signed update feeds, and Check for Updates in the app menu, command palette and Settings.
 - Quitting, closing the main window and update restarts wait for encrypted drafts and unconfirmed sends to be saved; failed saves leave the app open.
 
 ### Upgrade notes
+- Sparkle 2.9.6 preserves macOS 11 support. The 0.4.0 release job was cancelled before publication after detecting that Sparkle 2.10 requires macOS 12.
 - Install this version manually once. Earlier versions have no updater; future releases can update the complete signed app in place.
 - Update downloads and feeds are signed separately from Apple code signing. Apple Silicon and Intel use separate feeds.
 

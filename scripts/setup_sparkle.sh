@@ -2,8 +2,8 @@
 # Fetch the pinned, upstream Sparkle distribution; print its directory for SPARKLE_FRAMEWORK_PATH.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION=2.10.0
-SHA256=c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c
+VERSION=2.9.6
+SHA256=52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192
 DEST="$ROOT/target/sparkle-$VERSION"
 if [[ ! -f "$DEST/.verified-$SHA256" ]]; then
     mkdir -p "$ROOT/target"

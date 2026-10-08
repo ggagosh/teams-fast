@@ -2,16 +2,16 @@
 
 ## User behavior
 
-Version 0.4.0 is the first updater-enabled release. Install it manually once; 0.3.0 and earlier cannot acquire an updater automatically. The signed release app checks automatically and Sparkle downloads eligible updates. Its native interface provides installation/restart controls. **TeamsFast → Check for Updates…**, the command palette, and **Settings → Advanced → App updates** start a manual check. Automatic checking can be turned off in Settings; Sparkle owns these preferences, rather than duplicating them in our JSON settings.
+Version 0.4.1 is the first updater-enabled release. The 0.4.0 workflow was cancelled before publication when an upstream minimum-OS increase was detected. Install it manually once; 0.3.0 and earlier cannot acquire an updater automatically. The signed release app checks automatically and Sparkle downloads eligible updates. Its native interface provides installation/restart controls. **TeamsFast → Check for Updates…**, the command palette, and **Settings → Advanced → App updates** start a manual check. Automatic checking can be turned off in Settings; Sparkle owns these preferences, rather than duplicating them in our JSON settings.
 
 The update replaces the complete `.app`, not just its executable. Chat data and Keychain entries stay outside the bundle. Before a requested restart, TeamsFast saves a complete snapshot of drafts/unconfirmed sends on the storage worker and waits for acknowledgement. Failures keep the app open; cancelling the save keeps working, and Check for Updates can retry the postponed restart. Finish or dismiss an open dialog first. Normal Quit/window close use the same gate. OS-initiated termination has only GPUI's 200 ms best-effort cleanup window, not an unlimited save guarantee.
 
 ## Integration
 
 - `src/updates.rs` retains `sparkle-updater` 0.1.0's safe main-thread controller and relaunch continuation. No Tauri, WebView or custom FFI is introduced.
-- Sparkle 2.10.0 supplies its own native UI, downloads, verification and installer. No custom archive extractor, binary replacer or update daemon is added.
+- Sparkle 2.9.6 supplies its own native UI, downloads, verification and installer. No custom archive extractor, binary replacer or update daemon is added.
 - `auto-update` is optional for ordinary development. `cargo run` and `just app` do not need the native framework and cannot self-update. Demo mode also disables updater startup.
-- The release script downloads the pinned upstream framework and verifies its SHA-256 and signature. `build.rs` adds the bundle-relative framework runpath.
+- The release script downloads the pinned upstream framework and verifies its SHA-256, signature and minimum OS. Version 2.9.6 supports macOS 10.13+, preserving TeamsFast's macOS 11 minimum; 2.10 requires macOS 12 and must not be substituted without an explicit compatibility change. `build.rs` adds the bundle-relative framework runpath.
 - CI checks both default and updater-enabled compilation/Clippy. `scripts/release_macos.sh` enables the feature and copies the full framework, including helpers/XPC services, into `Contents/Frameworks`.
 
 ## Signing and feeds
