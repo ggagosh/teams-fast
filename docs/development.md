@@ -68,6 +68,12 @@ Check ⌘⇧P from the composer and while the switcher is open. Select **New con
 
 The keyboard revision passed `just check`, all 11 existing workspace tests, and eight temporary assertions against the actual fuzzy matcher (exact/prefix/subsequence, Unicode, whitespace and no-match cases). No permanent tests were added. Native demo rendering and the sidebar shortcut hint were inspected; background keyboard/AX attempts did not provide a reliable palette/focus acceptance result. Full native keyboard interaction remains manual acceptance, not a claimed automated pass. Relay and live Graph/OS checks are separate and were not rerun for keyboard navigation.
 
+### Palette styling follow-up (0.5.3)
+
+The switcher and command palette share the dialog's themed surface and separated keyboard hints. Conversation rows use compact, single-line titles and the same avatar unread badges as the sidebar; command labels align without mixed icon insets. Ranking, filtering and action routing are unchanged.
+
+Temporary signed demo fixtures checked dark/light rendering, long-name truncation, unread badges, no-match results and Commands. PID-targeted Down then Return opened the expected conversation and showed composer focus. Queries in the visual fixtures were supplied programmatically; typed search/Escape, minimum-window and real-account acceptance remain manual. `just check` and all 11 existing tests passed; the signed development bundle survived remembered-account, fresh and demo startup with isolated synthetic profiles. Relay, live Graph and OS notification checks were not rerun for this styling change.
+
 ## Automatic updates
 
 See [automatic updates](updates.md) for the native Sparkle integration, release feeds, key custody, safe restart and acceptance requirements. Plain development builds intentionally omit the updater framework; release builds enable it. The additional CI secret is `SPARKLE_PRIVATE_KEY`, backed up in 1Password, never `.env`. The release script signs nested Sparkle helpers/framework before the outer app, notarizes/staples, then generates separate signed appcasts for Apple Silicon and Intel.

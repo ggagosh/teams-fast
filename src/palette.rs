@@ -8,7 +8,8 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        ActiveTheme, Disableable, IconName, WindowExt,
+        ActiveTheme, Disableable, WindowExt,
+        badge::Badge,
         command::{Command, CommandItem, CommandState},
         h_flex,
         kbd::Kbd,
@@ -136,26 +137,37 @@ impl TeamsFast {
                 );
                 CommandItem::new().label(label).child(move |_, cx| {
                     h_flex()
-                        .h(px(38.))
+                        .h(px(32.))
                         .w_full()
                         .min_w_0()
                         .gap_3()
-                        .child(crate::ui::avatar(&title, photo.clone(), px(28.)))
-                        .child(div().flex_1().min_w_0().truncate().child(title.clone()))
+                        .text_size(px(13.))
+                        .child(div().flex_shrink_0().child(
+                            Badge::new().count(unread).child(crate::ui::avatar(
+                                &title,
+                                photo.clone(),
+                                px(28.),
+                            )),
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(if unread > 0 {
+                                    FontWeight::SEMIBOLD
+                                } else {
+                                    FontWeight::MEDIUM
+                                })
+                                .child(title.clone()),
+                        )
                         .when(current, |row| {
                             row.child(
                                 div()
+                                    .flex_shrink_0()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child("Current"),
-                            )
-                        })
-                        .when(unread > 0, |row| {
-                            row.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().primary)
-                                    .child(format!("{unread} unread")),
                             )
                         })
                 })
@@ -165,21 +177,17 @@ impl TeamsFast {
                 .items(items)
                 .filterable(false)
                 .bordered(false)
-                .placeholder("Search conversations…")
+                .bg(cx.theme().background)
+                .text_color(cx.theme().foreground)
+                .placeholder("Search all conversations…")
                 .max_h(px(280.))
-                .header(|_, _, cx| {
-                    div()
-                        .pb_2()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Recently visited first · search includes old call-only meetings")
-                })
                 .empty(|_, _, cx| {
                     div()
-                        .p_4()
+                        .px_3()
+                        .py_6()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("No matching conversations")
+                        .child("No matching conversations. Try another name.")
                 })
                 .on_query(|_, window, _| window.refresh())
                 .on_confirm(move |index, window, cx| {
@@ -191,10 +199,10 @@ impl TeamsFast {
                         });
                     }
                 })
-                .footer(|_, _, _| palette_keys());
+                .footer(|_, _, cx| palette_keys(cx));
             dialog
                 .title("Jump to conversation")
-                .width(px(560.))
+                .width(px(520.))
                 .margin_top(px(48.))
                 .child(action_scope(view.clone()).child(palette))
         });
@@ -210,28 +218,27 @@ impl TeamsFast {
         let selected = self.state.selected.clone();
         let muted = selected.as_ref().is_some_and(|id| self.state.is_muted(id));
         let light = self.state.prefs.light_theme;
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let palette = Command::new(&state)
                 .bordered(false)
+                .bg(cx.theme().background)
+                .text_color(cx.theme().foreground)
                 .placeholder("Type a command…")
                 .max_h(px(280.))
                 .item(
                     CommandItem::new()
                         .label("Jump to conversation")
-                        .icon(IconName::Search)
                         .action(Box::new(SwitchConversation)),
                 )
                 .item(
                     CommandItem::new()
                         .label("New conversation")
-                        .icon(IconName::Plus)
                         .disabled(!can_create)
                         .action(Box::new(NewConversation)),
                 )
                 .item(
                     CommandItem::new()
                         .label("Refresh chats and messages")
-                        .icon(IconName::RefreshCw)
                         .disabled(!live)
                         .action(Box::new(Refresh)),
                 )
@@ -257,7 +264,6 @@ impl TeamsFast {
                 .item(
                     CommandItem::new()
                         .label("Settings")
-                        .icon(IconName::Settings)
                         .action(Box::new(OpenSettings)),
                 )
                 .item(
@@ -270,7 +276,7 @@ impl TeamsFast {
                         .label("Keyboard shortcuts")
                         .action(Box::new(ShowShortcuts)),
                 )
-                .footer(|_, _, _| palette_keys());
+                .footer(|_, _, cx| palette_keys(cx));
             // Command dispatches the Action first. action_scope closes this dialog before opening
             // a replacement; an on_confirm close here would accidentally close that replacement.
             dialog
@@ -323,18 +329,25 @@ impl TeamsFast {
     }
 }
 
-fn palette_keys() -> impl IntoElement {
+fn palette_keys(cx: &App) -> Div {
     h_flex()
-        .pt_2()
-        .gap_2()
+        .justify_between()
+        .px_3()
+        .py_2()
+        .gap_4()
+        .border_t_1()
+        .border_color(cx.theme().border)
         .text_xs()
-        .child(key("up"))
-        .child(key("down"))
-        .child("navigate")
-        .child(key("enter"))
-        .child("open")
-        .child(key("escape"))
-        .child("clear / close")
+        .text_color(cx.theme().muted_foreground)
+        .child(
+            h_flex()
+                .gap_1()
+                .child(key("up"))
+                .child(key("down"))
+                .child(div().ml_1().child("Navigate")),
+        )
+        .child(h_flex().gap_2().child(key("enter")).child("Open"))
+        .child(h_flex().gap_2().child(key("escape")).child("Clear / close"))
 }
 
 fn key(stroke: &str) -> Kbd {

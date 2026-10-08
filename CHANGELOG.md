@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.5.3]
+
+### Changed
+- Polished the conversation switcher and command palette with a unified surface, compact rows, avatar unread badges and clearer keyboard hints.
+
 ## [0.5.2]
 
 ### Fixed
