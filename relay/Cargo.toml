@@ -1,0 +1,31 @@
+[package]
+name = "teamsfast-relay"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[features]
+default = ["server"]
+server = ["dep:axum", "dep:tokio", "dep:getrandom", "dep:subtle", "dep:serde_json", "dep:jsonwebtoken", "dep:ureq"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "signal"], optional = true }
+getrandom = { version = "0.4", optional = true }
+subtle = { version = "2", optional = true }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"], optional = true }
+ureq = { version = "3", optional = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[[bin]]
+name = "teamsfast-relay"
+path = "src/main.rs"
+required-features = ["server"]
+
+[lints.rust]
+unsafe_code = "forbid"

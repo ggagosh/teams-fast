@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-07T19:05:45Z",
+  "title": "Design System: TeamsFast",
+  "extensions": {},
+  "components": [
+    {
+      "name": "Kit titlebar",
+      "kind": "nav",
+      "description": "src/ui.rs::render and src/main.rs use GPUI Kit TitleBar and its native window options."
+    },
+    {
+      "name": "Kit conversation navigation",
+      "kind": "nav",
+      "description": "src/ui.rs::sidebar composes Kit Input, ListItem, Avatar, and Badge with ActiveTheme roles."
+    },
+    {
+      "name": "Kit transcript",
+      "kind": "custom",
+      "description": "src/ui.rs::conversation and message compose MessageScroller, MessageGroup, Message, Bubble, TextView, and Attachment. Incoming bubbles are neutral; own messages align right with a tint."
+    },
+    {
+      "name": "Kit composer",
+      "kind": "input",
+      "description": "src/app.rs initializes TextareaState; src/ui.rs renders a compact frameless Textarea inside a bordered surface with an icon Send button. Enter sends; Shift+Enter adds a newline."
+    },
+    {
+      "name": "Native Settings",
+      "kind": "custom",
+      "description": "src/preferences.rs composes Kit Settings, SettingPage, SettingGroup, SettingItem, and SettingField in a separate window."
+    },
+    {
+      "name": "Kit attachment cards",
+      "kind": "card",
+      "description": "src/ui.rs::message uses small Attachment cards for names and conversation links. Attachment bytes are not downloaded."
+    }
+  ],
+  "narrative": {
+    "overview": "TeamsFast uses GPUI Kit components on GPUI Fast, with gray surfaces and blue accents applied through Kit's semantic theme. Compact navigation leads into neutral incoming bubbles and right-aligned tinted own messages. A compact composer stays below the transcript; Settings has its own native window.",
+    "keyCharacteristics": [
+      "Kit components with gray/blue semantic theme values.",
+      "Resizable conversation navigation and a virtualized transcript.",
+      "Neutral incoming bubbles, tinted own messages, and inline formatted links.",
+      "Dark appearance by default, with a light appearance setting."
+    ],
+    "dos": [
+      "Do use existing GPUI Kit controls and theme roles.",
+      "Do preserve native text input, selection, focus, and window behavior.",
+      "Do keep Enter/Shift+Enter behavior, accessible labels, and tooltips consistent.",
+      "Do check both appearances, Georgian text, and narrow windows in the runnable app."
+    ],
+    "donts": [
+      "Don't restore the old egui palette or custom-painted controls.",
+      "Don't invent a second component, icon, or theme system.",
+      "Don't clear an unacknowledged draft or automatically repeat a message POST.",
+      "Don't expose tokens, keys, or real message content in diagnostics."
+    ]
+  }
+}

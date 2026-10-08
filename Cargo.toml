@@ -1,0 +1,62 @@
+[package]
+name = "teamsfast"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "A small native Microsoft Teams chat client"
+publish = false
+
+[workspace]
+members = ["relay"]
+default-members = ["."]
+resolver = "3"
+
+[dependencies]
+gpui-kit = "=0.7.1"
+anyhow = "1"
+async-channel = "2"
+directories = "6"
+ron = "0.12"
+html2text = "0.17.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "form", "json", "native-tls", "query", "system-proxy"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
+getrandom = "0.4"
+linkify = "0.10"
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+notify-rust = { version = "4.18.1", features = ["preview-macos-un"] }
+teamsfast-relay = { path = "relay", default-features = false }
+# Rich Graph notifications: self-signed RSA certificate, message decryption, validation tokens.
+rsa = { version = "0.9", features = ["sha2"] }
+x509-cert = { version = "0.2.5", features = ["builder"] }
+sha1 = "0.10"
+sha2 = { version = "0.10", features = ["oid"] }
+hmac = "0.12"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+base64 = "0.22"
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter"] }
+block2 = "0.6"
+objc2 = "0.6"
+
+[patch.crates-io]
+gpui-pre = { git = "https://github.com/longbridge/gpui-fast", rev = "edbd7641e9cc5afae84c542e04a13b3171489875" }
+gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast", rev = "edbd7641e9cc5afae84c542e04a13b3171489875" }
+gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast", rev = "edbd7641e9cc5afae84c542e04a13b3171489875" }
+gpui-pre-sum-tree = { git = "https://github.com/longbridge/gpui-fast", rev = "edbd7641e9cc5afae84c542e04a13b3171489875" }
+
+# GPUI layout/text shaping is unusably slow unoptimized; keep only our crate at debug opt-level.
+[profile.dev.package."*"]
+opt-level = 3
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "deny"

@@ -1,0 +1,14 @@
+/target/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+/dist/
+/relay/target/
+*.p12
+*.p8
+*.cer
+dev-secrets.json
+.idea/
+.vscode/

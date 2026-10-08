@@ -1,0 +1,6 @@
+[env]
+# Keep in sync with LSMinimumSystemVersion in packaging/macos/Info.plist.
+MACOSX_DEPLOYMENT_TARGET = "11.0"
+
+[target.'cfg(target_os = "macos")']
+runner = "./scripts/cargo_runner_macos.sh"
