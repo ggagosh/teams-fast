@@ -35,6 +35,12 @@ Check the runnable app:
 6. In the bundled app, use **Send test notification** and check OS permission, delivery, and click routing separately.
 7. Complete the signed-in checks in [the milestone](initial-milestone.md) using an approved conversation.
 
+## Window initialization and startup acceptance
+
+The content constructor passed to `gpui_kit::open_window` runs **before** Kit installs the window Root and component dialog state. The initial `TeamsFast::synchronize` is deferred with `cx.defer_in`; calling it inside the constructor crashed when a remembered account triggered dialog cleanup. Account-switch cleanup remains in the shared synchronization path after initialization.
+
+Check three native startup paths: demo, a fresh profile, and a remembered account with `cached_account` matching the tenant/client prefix. Demo/fresh startup alone does not exercise restoration. A temporary isolated-home fixture with synthetic account metadata reproduced the released 0.4.1 abort and survived startup with the fix; no tenant history or credential reset was needed. The fixed, locally Developer-ID-signed updater bundle passed all three startup checks, `just check`, updater-enabled Clippy and all 11 existing tests. This is launch verification, not full Graph/notification or update-install acceptance. No permanent tests were added.
+
 ## Encrypted history and optimistic updates
 
 See [local history](local-history.md) for the storage/reconciliation contract and acceptance cases. `rusqlite` bundles SQLCipher; native macOS builds use system cryptography. The cache worker verifies `cipher_version` before storing content. Debug and release history files and Keychain keys are isolated.

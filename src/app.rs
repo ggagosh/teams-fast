@@ -210,7 +210,7 @@ impl TeamsFast {
                 }
             }
         }));
-        let mut app = Self {
+        let app = Self {
             state,
             focus_handle: cx.focus_handle(),
             title_drag: false,
@@ -237,8 +237,13 @@ impl TeamsFast {
             _subscriptions: subscriptions,
             _tasks: vec![wake_task, timer],
         };
-        app.synchronize(window, cx);
-        app.focus_handle.focus(window, cx);
+        // Kit installs the window Root after this constructor returns. Account restoration
+        // can close dialogs during synchronization, so it must wait for that Root to exist.
+        cx.defer_in(window, |this, window, cx| {
+            this.synchronize(window, cx);
+            this.focus_handle.focus(window, cx);
+            cx.notify();
+        });
         app
     }
 

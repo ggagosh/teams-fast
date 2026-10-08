@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.4.2]
+
+### Fixed
+- Fixed a startup crash when restoring a remembered account: dialog cleanup now waits until the native window's component state exists.
+
+### Upgrade notes
+- If 0.4.1 crashes at launch, install 0.4.2 manually. Keep existing settings, history and Keychain entries; no data reset or sign-out is needed.
+
 ## [0.4.1]
 
 ### Added
