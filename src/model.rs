@@ -18,6 +18,8 @@ pub(crate) struct ChatSummary {
     pub unavailable: bool,
     pub is_meeting: bool,
     /// None until a message is found or a complete Graph history proves it is activity-only.
+    // Ignore v0.5.1's `has_messages`: unknownFutureValue system events poisoned that evidence.
+    #[serde(rename = "has_chat_messages")]
     pub has_messages: Option<bool>,
     pub web_url: Option<String>,
     pub members: usize,

@@ -472,13 +472,12 @@ impl Worker {
                             if kind == LoadKind::Activity {
                                 return Ok(Event::MeetingActivity {
                                     chat_id,
-                                    // Missing/future types cannot prove a thread is call-only.
-                                    has_messages: page.value.iter().any(|message| {
-                                        !matches!(
-                                            message.message_type.as_deref(),
-                                            Some("systemEventMessage" | "chatEvent")
-                                        )
-                                    }),
+                                    // Event details also identify system activity when Graph masks
+                                    // an evolvable enum as unknownFutureValue.
+                                    has_messages: page
+                                        .value
+                                        .iter()
+                                        .any(|message| !message.is_system_event()),
                                     next: page.next,
                                     started_revision,
                                 });
@@ -1334,6 +1333,7 @@ impl Session {
         decode(
             client
                 .get(url)
+                .header("Prefer", "include-unknown-enum-members")
                 .bearer_auth(self.access_token(client)?)
                 .send()
                 .map_err(http_failure)?,
@@ -2055,6 +2055,7 @@ struct GraphViewpoint {
 struct GraphPreview {
     id: Option<String>,
     message_type: Option<String>,
+    event_detail: Option<EventDetail>,
     #[serde(default)]
     is_deleted: bool,
     body: Option<Body>,
@@ -2083,8 +2084,10 @@ impl GraphChat {
         // Exact IDs only: member lists are not reliable enough to infer a chat with yourself.
         let is_self = self.id == SELF_CHAT || self.id == format!("19:{me}_{me}@unq.gbl.spaces");
         let preview = self.last_message_preview.as_ref();
-        let preview_is_message =
-            preview.is_some_and(|p| p.message_type.as_deref() == Some("message") && !p.is_deleted);
+        let has_message_preview = preview.is_some_and(|p| {
+            p.message_type.as_deref() == Some("message") && p.event_detail.is_none()
+        });
+        let preview_is_message = has_message_preview && preview.is_some_and(|p| !p.is_deleted);
         let preview_text = if preview.is_some_and(|p| p.is_deleted) {
             "Message deleted".into()
         } else if preview_is_message {
@@ -2164,9 +2167,7 @@ impl GraphChat {
             hidden: self.viewpoint.as_ref().is_some_and(|v| v.is_hidden),
             unavailable: false,
             is_meeting: self.chat_type.as_deref() == Some("meeting"),
-            has_messages: preview
-                .is_some_and(|p| p.message_type.as_deref() == Some("message"))
-                .then_some(true),
+            has_messages: has_message_preview.then_some(true),
             web_url: self.web_url,
             read_at: self.viewpoint.and_then(|v| v.last_message_read_date_time),
             members,
@@ -2299,6 +2300,14 @@ fn body_views(body: &Body) -> (String, String) {
 }
 
 impl GraphMessage {
+    fn is_system_event(&self) -> bool {
+        self.event_detail.is_some()
+            || matches!(
+                self.message_type.as_deref(),
+                Some("systemEventMessage" | "chatEvent")
+            )
+    }
+
     fn display(self, me: &str) -> Message {
         use crate::model::{File, Quote, Reaction, reaction_emoji};
         let user = self.from.as_ref().and_then(|author| author.user.as_ref());
@@ -2311,6 +2320,7 @@ impl GraphMessage {
             .and_then(|author| author.display_name.clone())
             .unwrap_or_else(|| "Teams".into());
         let deleted = self.deleted_date_time.is_some();
+        let system_event = self.is_system_event();
         let mut message = Message {
             id: self.id,
             author,
@@ -2330,7 +2340,7 @@ impl GraphMessage {
         };
         if message.system {
             // Event XML is not message HTML. Keep a quiet activity row, never a user bubble.
-            if self.message_type.as_deref() == Some("systemEventMessage") {
+            if system_event {
                 message.text = match self.event_detail.and_then(|detail| detail.kind).as_deref() {
                     Some("#microsoft.graph.membersAddedEventMessageDetail") => "Participants added",
                     Some("#microsoft.graph.membersDeletedEventMessageDetail") => {

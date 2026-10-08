@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.5.2]
+
+### Fixed
+- Correctly recognize Graph's masked system-event enum values, so old call-only meetings are no longer mistaken for conversations containing messages. Automatically recheck the incorrect classification cached by 0.5.1 without deleting history or drafts.
+- Show labeled activity rows for structured meeting events even when Graph returns `unknownFutureValue`.
+
+### Upgrade notes
+- Version 0.5.1 cached an incorrect answer for call-only meetings. This update automatically rechecks that classification; older entries can remain visible until background checks finish. Search by name to reopen filtered meetings.
+- No reset, sign-out or data deletion is needed. History, drafts, pending sends and Keychain entries are preserved.
+
 ## [0.5.1]
 
 ### Fixed
