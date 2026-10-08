@@ -1,6 +1,6 @@
 use crate::Wake;
 use crate::{
-    model::{ChatSummary, Message, Person},
+    model::{ChatSummary, Message, MessageChange, Person},
     settings,
 };
 use reqwest::{
@@ -14,7 +14,7 @@ use std::{
     io::Read,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     thread,
@@ -75,6 +75,7 @@ pub(crate) enum Command {
     Chats {
         next: Option<String>,
         background: bool,
+        started_revision: u64,
     },
     Messages {
         chat_id: String,
@@ -96,11 +97,17 @@ pub(crate) enum Command {
         local_id: String,
         text: String,
     },
-    React {
+    Mutate {
         chat_id: String,
         message_id: String,
-        reaction: String,
-        set: bool,
+        operation_id: u64,
+        change: MessageChange,
+    },
+    MarkRead {
+        chat_id: String,
+        marker: String,
+        active: Arc<AtomicBool>,
+        deadline: Instant,
     },
     People {
         query: String,
@@ -120,6 +127,8 @@ pub(crate) enum Operation {
     Message(String),
     /// Chat ID and local placeholder ID.
     Send(String, String),
+    Mutate(String, String, u64),
+    MarkRead(String, String),
     People(String),
     Create,
     Watch,
@@ -140,6 +149,7 @@ pub(crate) enum Event {
         chats: Vec<ChatSummary>,
         next: Option<String>,
         background: bool,
+        started_revision: u64,
     },
     Messages {
         chat_id: String,
@@ -161,6 +171,16 @@ pub(crate) enum Event {
         chat_id: String,
         local_id: String,
         message: Message,
+    },
+    Mutated {
+        chat_id: String,
+        message_id: String,
+        operation_id: u64,
+        message: Message,
+    },
+    Read {
+        chat_id: String,
+        marker: String,
     },
     People {
         query: String,
@@ -352,7 +372,11 @@ impl Worker {
                         .as_mut()
                         .ok_or_else(|| Failure::new("Sign in to load Teams chats."))?;
                     match command {
-                        Command::Chats { next, background } => {
+                        Command::Chats {
+                            next,
+                            background,
+                            started_revision,
+                        } => {
                             let url = match next {
                                 Some(link) => checked_graph_url(&link)?,
                                 None => {
@@ -417,6 +441,7 @@ impl Worker {
                                 chats,
                                 next: page.next,
                                 background,
+                                started_revision,
                             })
                         }
                         Command::Messages {
@@ -560,8 +585,8 @@ impl Worker {
                 .map_err(|_| "Live-update worker is unavailable.".into()),
             command => {
                 let queue = match command {
-                    Command::Send { .. } | Command::React { .. } => &self.sends,
-                    Command::Message { .. } => &self.updates,
+                    Command::Send { .. } | Command::Mutate { .. } => &self.sends,
+                    Command::Message { .. } | Command::MarkRead { .. } => &self.updates,
                     _ => &self.commands,
                 };
                 queue
@@ -671,7 +696,21 @@ fn spawn_request_lane(
                 Command::Send {
                     chat_id, local_id, ..
                 } => (Operation::Send(chat_id.clone(), local_id.clone()), "send"),
-                Command::React { chat_id, .. } => (Operation::Message(chat_id.clone()), "react"),
+                Command::Mutate {
+                    chat_id,
+                    message_id,
+                    operation_id,
+                    ..
+                } => (
+                    Operation::Mutate(chat_id.clone(), message_id.clone(), *operation_id),
+                    "mutate",
+                ),
+                Command::MarkRead {
+                    chat_id, marker, ..
+                } => (
+                    Operation::MarkRead(chat_id.clone(), marker.clone()),
+                    "read-marker",
+                ),
                 Command::Message { chat_id, .. } => {
                     (Operation::Message(chat_id.clone()), "incoming")
                 }
@@ -711,38 +750,107 @@ fn spawn_request_lane(
                             message: message.display(&session.user_id),
                         })
                     }
-                    Command::React {
+                    Command::Mutate {
                         chat_id,
                         message_id,
-                        reaction,
-                        set,
+                        operation_id,
+                        change,
                     } => {
-                        let action = if set { "setReaction" } else { "unsetReaction" };
-                        let response = client
-                            .post(graph_url(&[
+                        let token = session.access_token(client)?;
+                        if generation.load(Ordering::Relaxed) != epoch {
+                            return Err(Failure::new("Session canceled."));
+                        }
+                        let url = graph_url(&["chats", &chat_id, "messages", &message_id])?;
+                        let request = match change {
+                            MessageChange::Reaction { kind, set, .. } => client
+                                .post(graph_url(&[
+                                    "chats",
+                                    &chat_id,
+                                    "messages",
+                                    &message_id,
+                                    if set { "setReaction" } else { "unsetReaction" },
+                                ])?)
+                                .json(&serde_json::json!({"reactionType":kind})),
+                            MessageChange::Edit(text) => {
+                                if text.trim().is_empty() {
+                                    return Err(Failure::new("A message cannot be empty."));
+                                }
+                                client.patch(url.clone()).json(&serde_json::json!({"body":{"contentType":"text","content":text}}))
+                            }
+                            MessageChange::Delete => client.post(graph_url(&[
+                                "users",
+                                &session.user_id,
                                 "chats",
                                 &chat_id,
                                 "messages",
                                 &message_id,
-                                action,
-                            ])?)
-                            .bearer_auth(session.access_token(client)?)
-                            .json(&serde_json::json!({ "reactionType": reaction }))
-                            .send()
-                            .map_err(http_failure)?;
+                                "softDelete",
+                            ])?),
+                        };
+                        let response = request.bearer_auth(token).send().map_err(http_failure)?;
                         if !response.status().is_success() {
                             decode::<serde_json::Value>(response)?;
                         }
-                        // Reload so counts from other people stay authoritative.
-                        let message: GraphMessage = session.get(
-                            client,
-                            graph_url(&["chats", &chat_id, "messages", &message_id])?,
-                        )?;
-                        Ok(Event::Changed {
+                        // A successful write followed by a failed GET is NOT a rejected write.
+                        let message: GraphMessage = session.get(client, url).map_err(|mut e| {
+                            e.uncertain = true;
+                            e
+                        })?;
+                        Ok(Event::Mutated {
                             chat_id,
+                            message_id,
+                            operation_id,
                             message: message.display(&session.user_id),
-                            notify: false,
                         })
+                    }
+                    Command::MarkRead {
+                        chat_id,
+                        marker,
+                        active,
+                        deadline,
+                    } => {
+                        use base64::Engine as _;
+                        let token = session.access_token(client)?;
+                        let tenant = {
+                            let auth = session
+                                .auth
+                                .lock()
+                                .map_err(|_| Failure::new("Could not read sign-in state."))?;
+                            let payload = auth
+                                .token
+                                .id_token
+                                .as_deref()
+                                .and_then(|t| t.split('.').nth(1))
+                                .and_then(|p| {
+                                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                        .decode(p)
+                                        .ok()
+                                })
+                                .and_then(|p| serde_json::from_slice::<serde_json::Value>(&p).ok());
+                            payload
+                                .and_then(|p| p.get("tid")?.as_str().map(str::to_owned))
+                                .filter(|id| valid_uuid(id))
+                                .ok_or_else(|| {
+                                    Failure::new("Sign in again to synchronize read state.")
+                                })?
+                        };
+                        // Never replay a stale read intent after scrolling away, switching chats,
+                        // a long queue wait, or slow token refresh. Graph accepts no cutoff timestamp.
+                        if generation.load(Ordering::Relaxed) != epoch
+                            || !active.load(Ordering::Relaxed)
+                            || Instant::now() > deadline
+                        {
+                            return Err(Failure::new(
+                                "Read sync deferred; reopen or refresh the conversation to try again.",
+                            ));
+                        }
+                        let response = client.post(graph_url(&["chats", &chat_id, "markChatReadForUser"])?)
+                            .bearer_auth(token).json(&serde_json::json!({"user":{"id":session.user_id,"tenantId":tenant}}))
+                            .send().map_err(http_failure)?;
+                        if !response.status().is_success() {
+                            decode::<serde_json::Value>(response)?;
+                        }
+                        Ok(Event::Read { chat_id, marker })
                     }
                     Command::Message {
                         chat_id,
@@ -1768,6 +1876,7 @@ pub(crate) struct Failure {
     pub message: String,
     code: String,
     pub retry_after: Option<Duration>,
+    pub uncertain: bool,
 }
 
 impl Failure {
@@ -1776,6 +1885,7 @@ impl Failure {
             message: message.into(),
             code: String::new(),
             retry_after: None,
+            uncertain: false,
         }
     }
     fn throttled(delay: Duration) -> Self {
@@ -1786,16 +1896,19 @@ impl Failure {
             ),
             code: "throttled".into(),
             retry_after: Some(delay),
+            uncertain: false,
         }
     }
 }
 
 fn http_failure(error: reqwest::Error) -> Failure {
-    if error.is_timeout() {
+    let mut failure = if error.is_timeout() {
         Failure::new("Microsoft did not respond in time. Check your connection and try again.")
     } else {
         Failure::new(&format!("Network request failed: {}", error.without_url()))
-    }
+    };
+    failure.uncertain = true;
+    failure
 }
 
 fn decode<T: DeserializeOwned>(response: Response) -> Result<T, Failure> {
@@ -1851,6 +1964,7 @@ fn decode_bytes<T: DeserializeOwned>(
             message: format!("Microsoft returned {} ({code}): {detail}", status.as_u16()),
             code: code.into(),
             retry_after,
+            uncertain: status.is_server_error(),
         });
     }
     serde_json::from_slice(bytes)
@@ -1900,8 +2014,14 @@ struct GraphChat {
     topic: Option<String>,
     web_url: Option<String>,
     last_message_preview: Option<GraphPreview>,
+    viewpoint: Option<GraphViewpoint>,
     #[serde(default)]
     members: Vec<Member>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphViewpoint {
+    last_message_read_date_time: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1987,6 +2107,7 @@ impl GraphChat {
             preview_id,
             preview_mine,
             web_url: self.web_url,
+            read_at: self.viewpoint.and_then(|v| v.last_message_read_date_time),
             members,
             avatar_user,
             is_self,

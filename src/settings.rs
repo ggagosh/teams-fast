@@ -14,7 +14,12 @@ pub(crate) struct Settings {
     pub light_theme: bool,
     /// Link previews fetch the linked page directly, which tells that site you opened the chat.
     pub hide_link_previews: bool,
+    /// Legacy plaintext drafts, removed account-by-account only after encrypted migration commits.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub drafts: BTreeMap<String, BTreeMap<String, String>>,
+    pub cached_account: String,
+    /// Recently visited conversation IDs, isolated by account. No titles or message content.
+    pub recent_chats: BTreeMap<String, Vec<String>>,
     pub muted: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -108,7 +113,7 @@ fn write_private(name: &str, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("Could not replace {name}: {error}"))
 }
 
-fn directory() -> Result<std::path::PathBuf, String> {
+pub(crate) fn directory() -> Result<std::path::PathBuf, String> {
     let base =
         directories::BaseDirs::new().ok_or("Could not locate the application data folder.")?;
     #[cfg(target_os = "macos")]

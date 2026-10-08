@@ -21,22 +21,32 @@ Requirements: macOS 11 or later and a Microsoft 365 work or school account in a 
 ## Features
 
 - Chats with search, unread counts, mute, and a Dock badge
+- ⌘K conversation switcher, ⌘⇧P command palette, and ⌘/ shortcut help
 - Message history with formatting, inline images, link previews, reactions, and attachment cards
 - Instant sending (Enter sends, Shift+Enter adds a line); drafts are kept per chat
+- Encrypted local history and drafts; cached conversations remain readable offline
+- Optimistic reactions, plain-text editing and deletion of your own messages
 - New 1:1 and group chats
 - Live updates through encrypted Graph change notifications, decrypted on your Mac
 - Native notifications that open the chat when clicked
 - Light and dark appearance, Georgian and emoji text, a unified macOS window
 
-Not included: calls, meetings, channels, sending files, and editing or deleting messages.
+Not included: calls, meetings, channels, sending files, rich-text editing, and local message search.
+
+## Keyboard navigation
+
+- **⌘K** opens the conversation switcher: recently visited chats first, fuzzy name search, ↑/↓ and Return to open and focus the composer. Escape clears the query, then closes.
+- **⌘⇧P** opens app commands; **⌘/** shows shortcuts.
+- **⌘N** starts a chat, **⌘R** refreshes, **⌘,** opens Settings.
+- **⌘⇧F** focuses the sidebar filter. ⌘F is reserved for future message search.
 
 ## How it works
 
-- **Microsoft Graph, directly.** The app talks to Graph with your delegated permissions (`Chat.Read`, `ChatMessage.Send`). Tokens live in memory and the macOS Keychain only.
+- **Microsoft Graph, directly.** The app talks to Graph with your delegated permissions (`Chat.ReadWrite`, `ChatMessage.Send`). Tokens live in memory and the macOS Keychain only.
 - **A tiny relay for push.** Graph delivers change notifications to a webhook, and a desktop app can't receive webhooks. [`relay/`](relay) is a small Rust server that keeps a short in-memory queue and holds a long-poll open to the app. Graph encrypts each message with a key that only your Mac has, so the relay can't read message content. To register, the app presents your Microsoft ID token, which can't access Teams.
 - **Memory.** Images are decoded once at display size and kept within a fixed budget.
 
-See [architecture](docs/architecture.md) for details.
+See [architecture](docs/architecture.md) and [local history, recovery, and read-state limitations](docs/local-history.md) for details.
 
 ## Development
 

@@ -20,20 +20,57 @@ fn main() -> anyhow::Result<()> {
             cx.bind_keys([
                 KeyBinding::new("cmd-q", teamsfast::app::Quit, None),
                 KeyBinding::new("cmd-,", teamsfast::app::OpenSettings, Some("TeamsFast")),
-                KeyBinding::new("ctrl-,", teamsfast::app::OpenSettings, Some("TeamsFast")),
-                KeyBinding::new("cmd-f", teamsfast::app::SearchChats, Some("TeamsFast")),
+                KeyBinding::new(
+                    "cmd-k",
+                    teamsfast::app::SwitchConversation,
+                    Some("TeamsFast"),
+                ),
+                KeyBinding::new(
+                    "cmd-shift-p",
+                    teamsfast::app::ShowCommands,
+                    Some("TeamsFast"),
+                ),
+                KeyBinding::new("cmd-/", teamsfast::app::ShowShortcuts, Some("TeamsFast")),
+                KeyBinding::new(
+                    "cmd-shift-f",
+                    teamsfast::app::SearchChats,
+                    Some("TeamsFast"),
+                ),
                 KeyBinding::new("cmd-n", teamsfast::app::NewConversation, Some("TeamsFast")),
                 KeyBinding::new("cmd-r", teamsfast::app::Refresh, Some("TeamsFast")),
             ]);
-            cx.set_menus(vec![Menu {
-                name: "TeamsFast".into(),
-                disabled: false,
-                items: vec![
-                    MenuItem::action("Settings…", teamsfast::app::OpenSettings),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit TeamsFast", teamsfast::app::Quit),
-                ],
-            }]);
+            cx.set_menus(vec![
+                Menu {
+                    name: "TeamsFast".into(),
+                    disabled: false,
+                    items: vec![
+                        MenuItem::action("Settings…", teamsfast::app::OpenSettings),
+                        MenuItem::separator(),
+                        MenuItem::action("Quit TeamsFast", teamsfast::app::Quit),
+                    ],
+                },
+                Menu {
+                    name: "Go".into(),
+                    disabled: false,
+                    items: vec![
+                        MenuItem::action(
+                            "Jump to Conversation…",
+                            teamsfast::app::SwitchConversation,
+                        ),
+                        MenuItem::action("Commands…", teamsfast::app::ShowCommands),
+                        MenuItem::action("New Conversation…", teamsfast::app::NewConversation),
+                        MenuItem::action("Refresh", teamsfast::app::Refresh),
+                    ],
+                },
+                Menu {
+                    name: "Help".into(),
+                    disabled: false,
+                    items: vec![MenuItem::action(
+                        "Keyboard Shortcuts",
+                        teamsfast::app::ShowShortcuts,
+                    )],
+                },
+            ]);
             let compact = std::env::args().any(|arg| arg == "--compact");
             let bounds = Bounds::centered(
                 None,

@@ -23,7 +23,7 @@ The desktop is the default workspace member, so normal desktop builds do not com
 just app          # or: just app --demo
 ```
 
-This builds `target/TeamsFast.app`, signs it ad hoc, and runs it from the terminal. `.env` and the trace output work as with `just dev`. OS notifications and the Dock badge need this bundle; `just dev` cannot show them. The first launch asks for notification permission. If it was denied before, enable TeamsFast (including badges) in System Settings → Notifications. Omit `--demo` to restore a remembered account. Launching the bundle with `open` does not load `.env`; the current local bundle can include public IDs and the relay URL in its generated `LSEnvironment`, or configuration can be entered in the app. Never embed keys or tokens in the bundle. Signing/notarization remain release work.
+This builds `target/TeamsFast.app`, signs it with the Apple Development identity, and runs it from the terminal. `.env` and the trace output work as with `just dev`. OS notifications and the Dock badge need this bundle; `just dev` cannot show them. The first launch asks for notification permission. If it was denied before, enable TeamsFast (including badges) in System Settings → Notifications. Omit `--demo` to restore a remembered account. Launching the bundle with `open` does not load `.env`; the current local bundle can include public IDs and the relay URL in its generated `LSEnvironment`, or configuration can be entered in the app. Never embed keys or tokens in the bundle. Signing/notarization remain release work.
 
 Check the runnable app:
 
@@ -34,6 +34,22 @@ Check the runnable app:
 5. Check older-history prepending, scrolling, pending sends, and visible errors.
 6. In the bundled app, use **Send test notification** and check OS permission, delivery, and click routing separately.
 7. Complete the signed-in checks in [the milestone](initial-milestone.md) using an approved conversation.
+
+## Encrypted history and optimistic updates
+
+See [local history](local-history.md) for the storage/reconciliation contract and acceptance cases. `rusqlite` bundles SQLCipher; native macOS builds use system cryptography. The cache worker verifies `cipher_version` before storing content. Debug and release history files and Keychain keys are isolated.
+
+Local checks for this change: `just check` and all 11 existing workspace tests passed. A temporary synthetic database using the linked SQLCipher 4.10.0 library verified encrypted database/WAL content, correct-key reopening, wrong-key rejection, integrity, FTS5 availability, and retention that keeps pending sends. This did not exercise Keychain or live account migration. No permanent tests were added.
+
+Native demo rendering was inspected in a PID-targeted screenshot; attempted background input did not take effect, so edit/delete interaction acceptance remains unverified. No real Teams messages were sent or modified. Relay protocol checks were not rerun (no relay changes). Live Graph read sync, failure reconciliation and OS notifications still require acceptance in the signed bundle.
+
+## Keyboard navigation acceptance
+
+In `--demo`, check ⌘K with an empty query, an exact name, a non-contiguous name (for example `pd` → Product & design), and no matches. Use arrows and Return; confirm the correct chat opens and typing goes to its composer. Escape first clears the query and then closes, restoring prior focus. Mouse selection must behave the same. Visit several chats, reopen the switcher, and check recent ordering; the current chat is last.
+
+Check ⌘⇧P from the composer and while the switcher is open. Select **New conversation**, **Settings**, **Keyboard shortcuts**, and appearance/mute commands; opening a replacement dialog must not immediately close it. Disabled commands cannot run. Check ⌘/, ⌘N, ⌘R, ⌘, and ⌘⇧F; ⌘F is deliberately unbound. Repeat at the minimum window size, with a draft, offline, and after an account change. All modal snapshots must disappear on account change.
+
+The keyboard revision passed `just check`, all 11 existing workspace tests, and eight temporary assertions against the actual fuzzy matcher (exact/prefix/subsequence, Unicode, whitespace and no-match cases). No permanent tests were added. Native demo rendering and the sidebar shortcut hint were inspected; background keyboard/AX attempts did not provide a reliable palette/focus acceptance result. Full native keyboard interaction remains manual acceptance, not a claimed automated pass. Relay and live Graph/OS checks are separate and were not rerun for keyboard navigation.
 
 ## Relay protocol check
 

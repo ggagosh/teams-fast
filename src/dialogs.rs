@@ -8,7 +8,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants},
         dialog::Dialog,
         h_flex,
-        input::Input,
+        input::{Input, Textarea},
         list::ListItem,
         spinner::Spinner,
         v_flex,
@@ -18,13 +18,132 @@ use gpui_kit::{
 };
 
 impl TeamsFast {
+    pub(crate) fn edit_message(
+        &mut self,
+        chat_id: String,
+        message_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(message) = self
+            .state
+            .chats
+            .iter()
+            .find(|c| c.summary.id == chat_id)
+            .and_then(|c| c.messages.iter().find(|m| m.id == message_id))
+        else {
+            return;
+        };
+        if !message.files.is_empty() || message.quote.is_some() || !message.images.is_empty() {
+            self.state.error =
+                Some("Edit messages with attachments, images or quotes in Teams.".into());
+            cx.notify();
+            return;
+        }
+        let target = (chat_id.clone(), message_id.clone());
+        if self.editing.as_ref() != Some(&target) {
+            let text = message.text.clone();
+            self.message_edit
+                .update(cx, |input, cx| input.set_value(text, window, cx));
+        }
+        self.editing = Some(target);
+        let input = self.message_edit.clone();
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let view = view.clone();
+            let (chat_id, message_id) = (chat_id.clone(), message_id.clone());
+            dialog
+                .title("Edit message")
+                .width(px(520.))
+                .child("Saved as plain text; existing formatting will be removed.")
+                .child(Textarea::new(&input).aria_label("Message text"))
+                .footer(
+                    h_flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-edit")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("save-edit")
+                                .primary()
+                                .label("Save changes")
+                                .disabled(input.read(cx).value().trim().is_empty())
+                                .on_click(move |_, window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        let text = this.message_edit.read(cx).value().to_string();
+                                        if !text.trim().is_empty() {
+                                            this.state.mutate_message(
+                                                &chat_id,
+                                                &message_id,
+                                                crate::model::MessageChange::Edit(text),
+                                            );
+                                            this.synchronize(window, cx);
+                                            cx.notify();
+                                        }
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
+        self.message_edit.focus_handle(cx).focus(window, cx);
+    }
+
+    pub(crate) fn delete_message(
+        &mut self,
+        chat_id: String,
+        message_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let view = view.clone();
+            let (chat_id, message_id) = (chat_id.clone(), message_id.clone());
+            dialog
+                .title("Delete message?")
+                .width(px(420.))
+                .child("This deletes your message for everyone in this conversation.")
+                .footer(
+                    h_flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-delete")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("delete-message")
+                                .danger()
+                                .label("Delete message")
+                                .on_click(move |_, window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.state.mutate_message(
+                                            &chat_id,
+                                            &message_id,
+                                            crate::model::MessageChange::Delete,
+                                        );
+                                        this.synchronize(window, cx);
+                                        cx.notify();
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
+    }
+
     /// Account actions start the browser sign-in; progress shows on the sign-in screen.
     pub(crate) fn open_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.start_sign_in(false, window, cx);
     }
 
     pub(crate) fn open_new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state.mode == Mode::SigningIn {
+        if !matches!(self.state.mode, Mode::Demo | Mode::Live) {
             return;
         }
         if self.state.new_chat.is_none() {

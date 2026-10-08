@@ -16,7 +16,7 @@ Release builds have the client ID, tenant and relay URL built in. The app opens 
 
 For development, copy `.env.example` to `.env`, fill in `TEAMSFAST_CLIENT_ID` and `TEAMSFAST_TENANT`, then run `just dev`. Without IDs, the sign-in screen shows fields for them.
 
-The refresh token is kept in the macOS Keychain and restores the session on launch. Access tokens stay in memory. **Settings → Account → Disconnect account…** removes the saved sign-in and keeps local drafts for that account. Message history is not stored.
+The refresh token is kept in the macOS Keychain and restores the session on launch. Access tokens stay in memory. **Settings → Account → Disconnect account…** removes the saved sign-in and keeps local drafts for that account. History, drafts and pending sends are encrypted locally with a Keychain-held key. See [local history](local-history.md) for retention and recovery.
 
 ## Live updates and notifications
 
@@ -33,11 +33,12 @@ Under **Settings → Notifications**, enable **Desktop notifications**, optional
 
 ## Chat behavior and verification
 
-- Chat lists have previews, activity ordering, title search, and pagination. New-chat search supports 1:1 and group creation after additional consent.
+- Chat lists have previews, activity ordering, title search, and pagination. New-chat search supports 1:1 and group creation using the shared sign-in scope set.
 - Conversations load recent messages and offer **Load older messages**. Refresh follows navigation/manual actions, relay changes, and reconnect catch-up.
-- Enter sends; Shift+Enter adds a line break. A pending message appears immediately, and the draft remains until acknowledgement. Failed sends retain it. If delivery is uncertain, refresh and check before retrying.
+- Enter sends; Shift+Enter adds a line break. A pending message appears immediately; its text is committed to encrypted storage before sending, then the composer clears. Failed sends retain their text. If delivery is uncertain, refresh and check before retrying.
 - HTML becomes safely formatted text with inline HTTP(S) links. Attachment names appear in small cards that open the conversation in Teams; attachment files are not transferred by the desktop.
-- New-message counts are local indicators, not Teams server read-state synchronization.
+- Read markers synchronize with Teams using `Chat.ReadWrite`. Counts from partially cached history remain approximate; another device's reads are reconciled on refresh/reconnect.
+- Your own message menu offers edit and delete. Edits save plain text; messages containing images, attachments or quotes must be edited in Teams.
 
 Local demo and protocol tests do not prove tenant consent, live Graph push, or OS delivery. Verify those using an approved signed-in conversation and [the acceptance checklist](initial-milestone.md#acceptance-checks).
 

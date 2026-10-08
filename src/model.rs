@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct ChatSummary {
     pub id: String,
     pub title: String,
@@ -14,6 +16,7 @@ pub(crate) struct ChatSummary {
     pub avatar_user: Option<String>,
     /// The "Name (You)" chat, pinned first like Teams' Favorites.
     pub is_self: bool,
+    pub read_at: Option<String>,
 }
 
 pub(crate) struct Chat {
@@ -27,6 +30,11 @@ pub(crate) struct Chat {
     pub unread: usize,
     pub revision: u64,
     pub message_versions: HashMap<String, u64>,
+    pub pending: HashMap<String, PendingChange>,
+    pub read_pending: Option<String>,
+    pub read_attempted: Option<String>,
+    pub read_revision: u64,
+    pub history_cleared: u64,
 }
 
 impl Chat {
@@ -42,6 +50,11 @@ impl Chat {
             unread: 0,
             revision: 0,
             message_versions: HashMap::new(),
+            pending: HashMap::new(),
+            read_pending: None,
+            read_attempted: None,
+            read_revision: 0,
+            history_cleared: 0,
         }
     }
 
@@ -119,6 +132,43 @@ impl Chat {
         added
     }
 
+    /// Render optimistic changes without overwriting the latest server version.
+    pub fn display_messages(&self) -> Vec<Message> {
+        self.messages
+            .iter()
+            .cloned()
+            .map(|mut message| {
+                if let Some(pending) = self.pending.get(&message.id) {
+                    pending.change.apply(&mut message);
+                    message.updating = true;
+                    message.update_uncertain = pending.uncertain;
+                }
+                message
+            })
+            .collect()
+    }
+
+    pub fn recount_unread(&mut self) {
+        let Some(read_at) = self.read_pending.as_ref().or(self.summary.read_at.as_ref()) else {
+            return;
+        };
+        let read_at = timestamp(read_at);
+        self.unread = self
+            .messages
+            .iter()
+            .filter(|m| {
+                !m.mine
+                    && !m.deleted
+                    && m.delivery == Delivery::Sent
+                    && timestamp(&m.created_at) > read_at
+            })
+            .count();
+        // Graph gives a read marker, not an unread count. History may be only partially cached.
+        if !self.summary.preview_mine && timestamp(&self.summary.updated_at) > read_at {
+            self.unread = self.unread.max(1);
+        }
+    }
+
     /// Replaces the local placeholder of a confirmed send with Microsoft's message.
     pub fn complete_send(&mut self, local_id: &str, message: Message) {
         self.remove_message(local_id);
@@ -131,11 +181,12 @@ impl Chat {
         self.messages.retain(|message| message.id != id);
         if self.messages.len() != before {
             self.revision = self.revision.wrapping_add(1);
+            self.message_versions.insert(id.to_owned(), self.revision);
         }
     }
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Message {
     pub id: String,
     pub author: String,
@@ -158,10 +209,14 @@ pub(crate) struct Message {
     pub mine: bool,
     pub deleted: bool,
     pub delivery: Delivery,
+    #[serde(skip)]
+    pub updating: bool,
+    #[serde(skip)]
+    pub update_uncertain: bool,
 }
 
 /// Local send state of my messages; Microsoft's messages are always `Sent`.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Delivery {
     #[default]
     Sent,
@@ -170,7 +225,74 @@ pub(crate) enum Delivery {
     Unconfirmed,
 }
 
+#[derive(Clone)]
+pub(crate) enum MessageChange {
+    Reaction {
+        kind: String,
+        emoji: String,
+        set: bool,
+    },
+    Edit(String),
+    Delete,
+}
+
+pub(crate) struct PendingChange {
+    pub id: u64,
+    pub revision: u64,
+    pub change: MessageChange,
+    pub uncertain: bool,
+}
+
+impl MessageChange {
+    pub fn apply(&self, message: &mut Message) {
+        match self {
+            Self::Reaction { kind, emoji, set } => {
+                if let Some(i) = message.reactions.iter().position(|r| r.emoji == *emoji) {
+                    let r = &mut message.reactions[i];
+                    if r.mine != *set {
+                        r.count = if *set {
+                            r.count + 1
+                        } else {
+                            r.count.saturating_sub(1)
+                        };
+                        r.mine = *set;
+                    }
+                    if r.count == 0 {
+                        message.reactions.remove(i);
+                    }
+                } else if *set {
+                    message.reactions.push(Reaction {
+                        kind: kind.clone(),
+                        emoji: emoji.clone(),
+                        count: 1,
+                        mine: true,
+                    });
+                }
+            }
+            Self::Edit(text) => {
+                message.text = text.clone();
+                message.markdown.clear();
+                message.html.clear();
+                message.link = None;
+            }
+            Self::Delete => message.delete(),
+        }
+    }
+}
+
 impl Message {
+    pub fn delete(&mut self) {
+        self.deleted = true;
+        self.text = "Message deleted".into();
+        self.markdown = self.text.clone();
+        self.html.clear();
+        self.images.clear();
+        self.link = None;
+        self.files.clear();
+        self.quote = None;
+        self.reactions.clear();
+    }
+
     pub fn time_label(&self, offset: UtcOffset) -> String {
         time_label(&self.created_at, offset)
     }
@@ -195,7 +317,7 @@ impl Message {
     }
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct File {
     pub name: String,
     /// SharePoint/OneDrive web address; `None` opens the chat in Teams instead.
@@ -203,13 +325,13 @@ pub(crate) struct File {
 }
 
 /// The message a reply quotes.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Quote {
     pub author: String,
     pub text: String,
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Reaction {
     /// Graph `reactionType`, needed verbatim to remove a reaction.
     pub kind: String,

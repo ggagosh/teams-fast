@@ -4,7 +4,7 @@
 //! FIRST VIEWPORT: resizable conversation list, virtualized transcript, bottom composer.
 //! FORM: user-selected GPUI Kit conventions, with GPUI Fast retained rendering.
 use crate::{
-    app::{NewConversation, OpenSettings, Refresh, SearchChats, TeamsFast},
+    app::TeamsFast,
     model::{self, Delivery, Message, Preview},
     state::Mode,
 };
@@ -22,6 +22,7 @@ use gpui_kit::{
         empty::{Empty, EmptyContent},
         h_flex,
         input::{Input, Textarea},
+        kbd::Kbd,
         list::ListItem,
         menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
         message::{
@@ -58,22 +59,14 @@ impl Render for TeamsFast {
                 .child(resizable_panel().child(conversation))
                 .into_any_element()
         };
-        v_flex()
+        crate::palette::action_scope(cx.entity().downgrade())
             .id("teamsfast")
-            .key_context("TeamsFast")
+            .track_focus(&self.focus_handle)
+            .flex()
+            .flex_col()
             .size_full()
             .text_color(cx.theme().foreground)
             .text_size(px(14.))
-            .on_action(
-                cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &SearchChats, window, cx| {
-                this.search.focus_handle(cx).focus(window, cx)
-            }))
-            .on_action(
-                cx.listener(|this, _: &NewConversation, window, cx| this.open_new_chat(window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &Refresh, window, cx| this.refresh(window, cx)))
             .child(div().flex_1().min_h_0().child(body))
     }
 }
@@ -259,7 +252,7 @@ impl TeamsFast {
             .into_any_element()
     }
 
-    fn sidebar(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let query = self.state.search.to_lowercase();
         let rows: Vec<_> = self
             .state
@@ -407,7 +400,35 @@ impl TeamsFast {
                                     ),
                             ),
                     )
-                    .child(Input::new(&self.search).prefix(IconName::Search).small()),
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Input::new(&self.search)
+                                    .prefix(IconName::Search)
+                                    .small()
+                                    .flex_1()
+                                    .min_w_0(),
+                            )
+                            .child(
+                                Button::new("jump-to-chat")
+                                    .ghost()
+                                    .small()
+                                    .label("Jump")
+                                    .tooltip("Jump to conversation · ⌘K")
+                                    .when_some(
+                                        Kbd::binding_for_action(
+                                            &crate::app::SwitchConversation,
+                                            Some("TeamsFast"),
+                                            window,
+                                        ),
+                                        |button, hint| button.child(hint),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_switcher(window, cx)
+                                    })),
+                            ),
+                    ),
             )
             .child(
                 v_flex()
@@ -463,13 +484,18 @@ impl TeamsFast {
                                     .truncate()
                                     .child(status),
                             )
-                            .when(self.state.mode == Mode::Demo, |row| {
-                                row.child(Button::new("connect").small().label("Connect").on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.open_connection(window, cx)
-                                    }),
-                                ))
-                            }),
+                            .when(
+                                matches!(self.state.mode, Mode::Demo | Mode::Offline),
+                                |row| {
+                                    row.child(
+                                        Button::new("connect").small().label("Connect").on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.open_connection(window, cx)
+                                            }),
+                                        ),
+                                    )
+                                },
+                            ),
                     )
                     .when(!self.state.name.is_empty(), |footer| {
                         footer.child(div().text_xs().truncate().child(self.state.name.clone()))
@@ -530,7 +556,9 @@ impl TeamsFast {
         let loading = chat.loading;
         let older = chat.next_messages.is_some();
         let send_error = chat.send_error.clone();
-        let can_send = !chat.draft.trim().is_empty() && self.state.mode != Mode::SigningIn;
+        let can_send = !chat.draft.trim().is_empty()
+            && (self.state.mode == Mode::Demo
+                || (self.state.mode == Mode::Live && self.state.store_ready));
         let web_url =
             chat.summary.web_url.clone().filter(|value| {
                 reqwest::Url::parse(value).is_ok_and(|url| url.scheme() == "https")
@@ -546,6 +574,7 @@ impl TeamsFast {
                 chat_id: id.clone(),
                 chat_url: web_url.clone(),
                 view: cx.entity().downgrade(),
+                can_mutate: matches!(self.state.mode, Mode::Demo | Mode::Live),
             };
             MessageScroller::new(
                 SharedString::from(format!("transcript-{id}")),
@@ -743,6 +772,7 @@ struct Rows {
     chat_id: String,
     chat_url: Option<String>,
     view: WeakEntity<TeamsFast>,
+    can_mutate: bool,
 }
 
 fn open(url: Option<String>) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
@@ -897,6 +927,7 @@ fn message(rows: &Rows, index: usize, cx: &mut App) -> AnyElement {
                 .ghost()
                 .xsmall()
                 .selected(reaction.mine)
+                .disabled(!rows.can_mutate || value.updating || value.deleted)
                 .label(if reaction.count > 1 {
                     format!("{} {}", reaction.emoji, reaction.count)
                 } else {
@@ -975,19 +1006,67 @@ fn message(rows: &Rows, index: usize, cx: &mut App) -> AnyElement {
             value.id.clone(),
             value.text.clone(),
         );
+        let enabled = rows.can_mutate
+            && !value.updating
+            && !value.deleted
+            && value.delivery == Delivery::Sent;
+        let own = value.mine && enabled;
+        let unconfirmed = value.delivery == Delivery::Unconfirmed;
         move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-            let menu = model::QUICK_REACTIONS
+            let mut menu = model::QUICK_REACTIONS
                 .iter()
                 .fold(menu, |menu, (emoji, label)| {
                     menu.item(
-                        PopupMenuItem::new(format!("{emoji}  {label}")).on_click(react(
-                            &view,
-                            &chat_id,
-                            &message_id,
-                            emoji,
-                        )),
+                        PopupMenuItem::new(format!("{emoji}  {label}"))
+                            .disabled(!enabled)
+                            .on_click(react(&view, &chat_id, &message_id, emoji)),
                     )
                 });
+            if own {
+                let edit_view = view.clone();
+                let edit_chat = chat_id.clone();
+                let edit_id = message_id.clone();
+                let delete_view = view.clone();
+                let delete_chat = chat_id.clone();
+                let delete_id = message_id.clone();
+                menu = menu
+                    .separator()
+                    .item(
+                        PopupMenuItem::new("Edit message…").on_click(move |_, window, cx| {
+                            let _ = edit_view.update(cx, |this, cx| {
+                                this.edit_message(edit_chat.clone(), edit_id.clone(), window, cx)
+                            });
+                        }),
+                    )
+                    .item(
+                        PopupMenuItem::new("Delete message…").on_click(move |_, window, cx| {
+                            let _ = delete_view.update(cx, |this, cx| {
+                                this.delete_message(
+                                    delete_chat.clone(),
+                                    delete_id.clone(),
+                                    window,
+                                    cx,
+                                )
+                            });
+                        }),
+                    );
+            }
+            if unconfirmed {
+                let discard_view = view.clone();
+                let discard_chat = chat_id.clone();
+                let discard_id = message_id.clone();
+                menu = menu.separator().item(
+                    PopupMenuItem::new("Remove local copy (does not unsend)").on_click(
+                        move |_, window, cx| {
+                            let _ = discard_view.update(cx, |this, cx| {
+                                this.state.discard_local_send(&discard_chat, &discard_id);
+                                this.synchronize(window, cx);
+                                cx.notify();
+                            });
+                        },
+                    ),
+                );
+            }
             let text = text.clone();
             menu.separator()
                 .item(PopupMenuItem::new("Copy text").on_click(move |_, _, cx| {
@@ -1015,21 +1094,33 @@ fn message(rows: &Rows, index: usize, cx: &mut App) -> AnyElement {
         .content(MessageContent::new().bubble(bubble))
         // Others' first message already shows its time in the bubble header.
         .when(
-            value.delivery != Delivery::Sent || (last_in_group && (value.mine || grouped)),
+            value.updating
+                || value.delivery != Delivery::Sent
+                || (last_in_group && (value.mine || grouped)),
             |row| {
                 row.footer(
                     MessageFooter::new()
                         .content_inset(false)
                         .text_size(px(10.))
-                        .text_color(if value.delivery == Delivery::Unconfirmed {
-                            cx.theme().danger
+                        .text_color(
+                            if value.delivery == Delivery::Unconfirmed || value.update_uncertain {
+                                cx.theme().danger
+                            } else {
+                                cx.theme().muted_foreground
+                            },
+                        )
+                        .child(if value.updating {
+                            if value.update_uncertain {
+                                "Update not confirmed".into()
+                            } else {
+                                "Updating…".into()
+                            }
                         } else {
-                            cx.theme().muted_foreground
-                        })
-                        .child(match value.delivery {
-                            Delivery::Sent => value.time_label(offset),
-                            Delivery::Sending => "Sending…".into(),
-                            Delivery::Unconfirmed => "Not confirmed".into(),
+                            match value.delivery {
+                                Delivery::Sent => value.time_label(offset),
+                                Delivery::Sending => "Sending…".into(),
+                                Delivery::Unconfirmed => "Not confirmed".into(),
+                            }
                         }),
                 )
             },
@@ -1077,7 +1168,7 @@ fn logo() -> Arc<Image> {
     .clone()
 }
 
-fn avatar(name: &str, photo: Option<Arc<Image>>, size: Pixels) -> Avatar {
+pub(crate) fn avatar(name: &str, photo: Option<Arc<Image>>, size: Pixels) -> Avatar {
     // Initials come from words, not symbols: "Product & design" is "PD", not "P&".
     let name: Vec<_> = name
         .split_whitespace()

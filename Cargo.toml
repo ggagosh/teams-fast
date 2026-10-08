@@ -1,6 +1,6 @@
 [package]
 name = "teamsfast"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A small native Microsoft Teams chat client"
@@ -21,6 +21,7 @@ html2text = "0.17.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "form", "json", "native-tls", "query", "system-proxy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { version = "0.38", features = ["bundled-sqlcipher"] }
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset"] }
 getrandom = "0.4"
 linkify = "0.10"

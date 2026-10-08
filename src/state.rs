@@ -1,18 +1,23 @@
 use crate::Wake;
 use crate::{
     model::{
-        self, Chat, ChatSummary, Message, NoticeHistory, Person, Preview, Reaction, demo_chats,
+        self, Chat, ChatSummary, Message, MessageChange, NoticeHistory, PendingChange, Person,
+        Preview, demo_chats,
     },
     notifications::{NoticeEvent, Notifications},
     realtime::{PushClient, PushEvent},
     settings::Settings,
+    store::{self, Store},
     teams::{AccountConfig, Command, Event, LoadKind, Media, Operation, Worker},
 };
 use gpui_kit::{Image, ImageFormat, RenderImage};
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    sync::Arc,
-    time::Instant,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 use time::UtcOffset;
 
@@ -23,6 +28,7 @@ const MEDIA_BUDGET: usize = 48 * 1024 * 1024;
 pub(crate) enum Mode {
     Demo,
     SigningIn,
+    Offline,
     Live,
 }
 
@@ -40,6 +46,13 @@ pub(crate) struct NewChat {
 
 pub(crate) struct ChatState {
     pub worker: Option<Worker>,
+    store: Option<Store>,
+    pub store_ready: bool,
+    cache_dirty: HashSet<String>,
+    cache_removed: HashMap<String, Vec<String>>,
+    pub draft_dirty: HashSet<String>,
+    read_active: Option<(String, Arc<AtomicBool>)>,
+    hot_chats: VecDeque<String>,
     pub mode: Mode,
     pub chats: Vec<Chat>,
     pub selected: Option<String>,
@@ -135,6 +148,11 @@ impl ChatState {
             app.mode = Mode::SigningIn;
             app.chats.clear();
             app.selected = None;
+            let prefix = format!("{}/{}/", app.prefs.tenant, app.prefs.client_id);
+            if app.prefs.cached_account.starts_with(&prefix) {
+                app.account = app.prefs.cached_account.clone();
+                app.open_store();
+            }
             app.request(Command::Resume(app.account_config()));
         }
         app
@@ -145,6 +163,13 @@ impl ChatState {
         let selected = chats.first().map(|chat| chat.summary.id.clone());
         Self {
             worker: None,
+            store: None,
+            store_ready: false,
+            cache_dirty: HashSet::new(),
+            cache_removed: HashMap::new(),
+            draft_dirty: HashSet::new(),
+            read_active: None,
+            hot_chats: VecDeque::new(),
             mode: Mode::Demo,
             chats,
             selected,
@@ -242,16 +267,29 @@ impl ChatState {
         }
     }
     pub fn save_drafts(&mut self) {
-        if self.mode == Mode::Live && !self.account.is_empty() {
-            let drafts = self.prefs.drafts.entry(self.account.clone()).or_default();
-            for chat in &self.chats {
-                if chat.draft.is_empty() {
-                    drafts.remove(&chat.summary.id);
-                } else {
-                    drafts.insert(chat.summary.id.clone(), chat.draft.clone());
-                }
+        let Some(store) = self.store.as_ref().filter(|_| self.store_ready) else {
+            return;
+        };
+        self.draft_dirty.retain(|id| {
+            let Some(chat) = self.chats.iter().find(|c| &c.summary.id == id) else {
+                return false;
+            };
+            // The prepare transaction clears the old draft only after the send text is durable.
+            if chat.draft.is_empty()
+                && chat
+                    .messages
+                    .iter()
+                    .any(|m| m.delivery == model::Delivery::Sending)
+            {
+                return true;
             }
-        }
+            store
+                .send(store::Command::Draft {
+                    chat_id: id.clone(),
+                    text: chat.draft.clone(),
+                })
+                .is_err()
+        });
     }
     pub fn is_muted(&self, id: &str) -> bool {
         self.prefs
@@ -267,12 +305,19 @@ impl ChatState {
     }
     pub fn use_demo(&mut self, forget: bool) {
         self.save_drafts();
+        self.cancel_read();
+        self.store = None;
+        self.store_ready = false;
+        self.cache_dirty.clear();
+        self.cache_removed.clear();
+        self.draft_dirty.clear();
         let config = self.account_config();
         if let Some(worker) = &self.worker {
             worker.reset();
         }
         if forget {
             self.prefs.remember = false;
+            self.prefs.cached_account.clear();
             self.request(Command::Forget(config));
         }
         self.push = None;
@@ -317,6 +362,12 @@ impl ChatState {
             return;
         }
         self.save_drafts();
+        self.cancel_read();
+        self.store = None;
+        self.store_ready = false;
+        self.cache_dirty.clear();
+        self.cache_removed.clear();
+        self.draft_dirty.clear();
         self.push = None;
         if let Some(worker) = &self.worker {
             worker.reset();
@@ -507,27 +558,42 @@ impl ChatState {
             Event::DeviceCode { user_code, url } => self.device_code = Some((user_code, url)),
             Event::SignInPage(url) => self.sign_in_page = Some(url),
             Event::Connected { user_id, name } => {
+                let account = format!("{}/{}/{}", self.prefs.tenant, self.prefs.client_id, user_id);
+                if self.account != account {
+                    self.chats.clear();
+                    self.selected = None;
+                    self.store = None;
+                    self.store_ready = false;
+                    self.cache_dirty.clear();
+                    self.cache_removed.clear();
+                    self.draft_dirty.clear();
+                }
                 self.user_id = user_id;
                 self.name = name;
-                self.account = format!(
-                    "{}/{}/{}",
-                    self.prefs.tenant, self.prefs.client_id, self.user_id
-                );
+                self.account = account;
+                self.prefs.cached_account = self.account.clone();
+                if self.store.is_none() {
+                    self.open_store();
+                } else if let Some(store) = &self.store {
+                    let _ = store.send(store::Command::Name(self.name.clone()));
+                }
                 self.mode = Mode::Live;
                 self.device_code = None;
                 self.sign_in_page = None;
-                self.chats.clear();
-                self.selected = None;
                 self.baseline_ready = false;
                 self.notice_history = NoticeHistory::default();
                 self.photos.clear();
                 self.refresh_chats(None, false);
                 self.start_push();
+                if let Some(id) = self.selected.clone() {
+                    self.refresh_messages(id, None, LoadKind::Initial);
+                }
             }
             Event::Chats {
                 chats,
                 next,
                 background,
+                started_revision,
             } => {
                 self.chats_loading = false;
                 self.next_chats = next.clone();
@@ -556,7 +622,19 @@ impl ChatState {
                                     None,
                                 ));
                         }
+                        if chat.read_revision > started_revision {
+                            summary.read_at.clone_from(&chat.summary.read_at);
+                        }
+                        if model::timestamp(&summary.updated_at)
+                            < model::timestamp(&chat.summary.updated_at)
+                        {
+                            summary.updated_at.clone_from(&chat.summary.updated_at);
+                            summary.preview.clone_from(&chat.summary.preview);
+                            summary.preview_id.clone_from(&chat.summary.preview_id);
+                            summary.preview_mine = chat.summary.preview_mine;
+                        }
                         chat.summary = summary;
+                        chat.recount_unread();
                     } else {
                         let mut chat = Chat::new(summary);
                         chat.draft = self
@@ -566,9 +644,12 @@ impl ChatState {
                             .and_then(|drafts| drafts.get(&chat.summary.id))
                             .cloned()
                             .unwrap_or_default();
+                        chat.recount_unread();
                         self.chats.push(chat);
                     }
                 }
+                self.cache_dirty
+                    .extend(self.chats.iter().map(|c| c.summary.id.clone()));
                 self.sort_chats();
                 // Open the latest conversation, not the pinned (often empty) self chat.
                 if self.selected.is_none()
@@ -617,7 +698,19 @@ impl ChatState {
                             self.notice_history.first(&chat_id, &message.id);
                         }
                     }
+                    for message in &messages {
+                        if chat
+                            .pending
+                            .get(&message.id)
+                            .is_some_and(|p| p.uncertain && p.revision <= started_revision)
+                        {
+                            chat.pending.remove(&message.id);
+                            chat.revision = chat.revision.wrapping_add(1);
+                        }
+                    }
                     chat.merge_messages_after(messages, Some(started_revision));
+                    chat.recount_unread();
+                    self.cache_dirty.insert(chat_id.clone());
                     chat.loading = false;
                     chat.loaded = true;
                 }
@@ -691,7 +784,13 @@ impl ChatState {
                             notices.show(epoch, chat_id.clone(), chat.summary.title.clone(), body);
                         }
                     }
+                    if chat.pending.get(&message.id).is_some_and(|p| p.uncertain) {
+                        chat.pending.remove(&message.id);
+                        chat.revision = chat.revision.wrapping_add(1);
+                    }
                     chat.merge_messages(vec![message]);
+                    chat.recount_unread();
+                    self.cache_dirty.insert(chat_id);
                 }
                 self.sort_chats();
             }
@@ -700,6 +799,15 @@ impl ChatState {
                 message_id,
             } => {
                 self.change_inflight = false;
+                if let Some(store) = &self.store
+                    && let Err(error) = store.send(store::Command::Delete {
+                        chat_id: chat_id.clone(),
+                        message_id: message_id.clone(),
+                    })
+                {
+                    self.error = Some(error);
+                }
+                self.cache_dirty.insert(chat_id.clone());
                 if let Some(chat) = self
                     .chats
                     .iter_mut()
@@ -713,16 +821,52 @@ impl ChatState {
                         .iter_mut()
                         .find(|message| message.id == message_id)
                     {
-                        message.deleted = true;
-                        message.text = "Message deleted".into();
-                        message.markdown = "Message deleted".into();
-                        message.html.clear();
-                        message.images.clear();
-                        message.link = None;
-                        message.files.clear();
-                        message.quote = None;
-                        message.reactions.clear();
+                        message.delete();
                     }
+                    if chat.summary.preview_id.as_ref() == Some(&message_id) {
+                        chat.summary.preview = "Message deleted".into();
+                    }
+                    chat.pending.remove(&message_id);
+                    chat.recount_unread();
+                }
+            }
+            Event::Mutated {
+                chat_id,
+                message_id,
+                operation_id,
+                message,
+            } => {
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == chat_id) {
+                    if chat
+                        .pending
+                        .get(&message_id)
+                        .is_some_and(|p| p.id == operation_id)
+                    {
+                        chat.pending.remove(&message_id);
+                        chat.revision = chat.revision.wrapping_add(1);
+                    }
+                    chat.merge_messages(vec![message]);
+                    chat.recount_unread();
+                    self.cache_dirty.insert(chat_id);
+                }
+            }
+            Event::Read { chat_id, marker } => {
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == chat_id) {
+                    if model::timestamp(&marker)
+                        >= chat
+                            .summary
+                            .read_at
+                            .as_deref()
+                            .map_or(i128::MIN, model::timestamp)
+                    {
+                        chat.summary.read_at = Some(marker.clone());
+                    }
+                    if chat.read_pending.as_ref() == Some(&marker) {
+                        chat.read_pending = None;
+                    }
+                    chat.read_revision = self.revision;
+                    chat.recount_unread();
+                    self.cache_dirty.insert(chat_id);
                 }
             }
             Event::Sent {
@@ -737,6 +881,12 @@ impl ChatState {
                     .find(|chat| chat.summary.id == chat_id)
                 {
                     chat.complete_send(&local_id, message);
+                    self.cache_removed
+                        .entry(chat_id.clone())
+                        .or_default()
+                        .push(local_id);
+                    self.cache_dirty.insert(chat_id.clone());
+                    self.draft_dirty.insert(chat_id.clone());
                 }
                 self.timelines.entry(chat_id).or_default().jump_to_bottom = true;
                 self.sort_chats();
@@ -823,7 +973,11 @@ impl ChatState {
                         if crate::teams::tracing() {
                             eprintln!("TeamsFast sign-in failed: {}", error.message);
                         }
-                        self.use_demo(false);
+                        if self.store.is_some() {
+                            self.mode = Mode::Offline;
+                        } else {
+                            self.use_demo(false);
+                        }
                         self.error = Some(error.message);
                     }
                     Operation::Chats => {
@@ -866,7 +1020,41 @@ impl ChatState {
                                 "Send not confirmed. Refresh before retrying. {}",
                                 error.message
                             ));
+                            self.draft_dirty.insert(id.clone());
+                            self.cache_dirty.insert(id);
                         }
+                    }
+                    Operation::Mutate(chat_id, message_id, operation_id) => {
+                        if let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == chat_id)
+                            && chat
+                                .pending
+                                .get(&message_id)
+                                .is_some_and(|p| p.id == operation_id)
+                        {
+                            if error.uncertain {
+                                chat.pending.get_mut(&message_id).unwrap().uncertain = true;
+                                self.pending_changes
+                                    .insert((chat_id, message_id), (false, false, None));
+                            } else {
+                                chat.pending.remove(&message_id);
+                            }
+                            chat.revision = chat.revision.wrapping_add(1);
+                        }
+                        self.error = Some(if error.uncertain {
+                            format!("Update not confirmed. Refresh to check. {}", error.message)
+                        } else {
+                            error.message
+                        });
+                    }
+                    Operation::MarkRead(chat_id, marker) => {
+                        if let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == chat_id)
+                        {
+                            if chat.read_pending.as_ref() == Some(&marker) {
+                                chat.read_pending = None;
+                            }
+                            chat.recount_unread();
+                        }
+                        self.error = Some(error.message);
                     }
                     Operation::People(query) => {
                         if let Some(dialog) = &mut self.new_chat {
@@ -973,67 +1161,372 @@ impl ChatState {
 
     /// Adds or removes my `emoji` reaction, updating the timeline before Microsoft confirms.
     pub fn toggle_reaction(&mut self, chat_id: &str, message_id: &str, emoji: &str) {
-        let live = self.mode == Mode::Live;
-        let Some(chat) = self
+        let Some(message) = self
             .chats
-            .iter_mut()
-            .find(|chat| chat.summary.id == chat_id)
+            .iter()
+            .find(|c| c.summary.id == chat_id)
+            .and_then(|c| c.messages.iter().find(|m| m.id == message_id))
         else {
             return;
         };
-        // Unconfirmed local messages have no Microsoft ID to react to yet.
+        let reaction = message.reactions.iter().find(|r| r.emoji == emoji);
+        let change = MessageChange::Reaction {
+            kind: reaction.map_or_else(|| emoji.to_owned(), |r| r.kind.clone()),
+            emoji: emoji.into(),
+            set: !reaction.is_some_and(|r| r.mine),
+        };
+        self.mutate_message(chat_id, message_id, change);
+    }
+
+    pub fn mutate_message(&mut self, chat_id: &str, message_id: &str, change: MessageChange) {
+        if !matches!(self.mode, Mode::Live | Mode::Demo) {
+            return;
+        }
+        let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == chat_id) else {
+            return;
+        };
+        if chat.pending.contains_key(message_id) {
+            return;
+        }
         let Some(message) = chat
             .messages
             .iter_mut()
-            .find(|m| m.id == message_id && m.delivery == model::Delivery::Sent)
+            .find(|m| m.id == message_id && !m.deleted && m.delivery == model::Delivery::Sent)
         else {
             return;
         };
-        let index = message.reactions.iter().position(|r| r.emoji == emoji);
-        let (reaction, set) = match index {
-            Some(index) if message.reactions[index].mine => {
-                let existing = &mut message.reactions[index];
-                let kind = existing.kind.clone();
-                existing.count -= 1;
-                existing.mine = false;
-                if existing.count == 0 {
-                    message.reactions.remove(index);
-                }
-                (kind, false)
-            }
-            Some(index) => {
-                let existing = &mut message.reactions[index];
-                existing.count += 1;
-                existing.mine = true;
-                (emoji.to_owned(), true)
-            }
-            None => {
-                message.reactions.push(Reaction {
-                    kind: emoji.to_owned(),
-                    emoji: emoji.to_owned(),
-                    count: 1,
-                    mine: true,
-                });
-                (emoji.to_owned(), true)
-            }
-        };
-        // Newer than any fetch already in flight, so a stale reload cannot undo it.
+        if !matches!(change, MessageChange::Reaction { .. }) && !message.mine {
+            return;
+        }
+        // Text editing must not silently discard attachments, quotes or Teams formatting.
+        if matches!(change, MessageChange::Edit(_))
+            && (!message.files.is_empty() || message.quote.is_some() || !message.images.is_empty())
+        {
+            self.error = Some("Edit formatted messages and attachments in Teams; plain-text editing is supported here.".into());
+            return;
+        }
+        if self.mode == Mode::Demo {
+            change.apply(message);
+            chat.revision = chat.revision.wrapping_add(1);
+            return;
+        }
+        self.demo_message_id += 1;
+        let operation_id = self.demo_message_id;
         chat.revision = chat.revision.wrapping_add(1);
-        chat.message_versions
-            .insert(message_id.to_owned(), chat.revision);
-        self.revision = self.revision.wrapping_add(1);
-        if live {
-            self.request(Command::React {
-                chat_id: chat_id.to_owned(),
-                message_id: message_id.to_owned(),
-                reaction,
-                set,
-            });
+        chat.pending.insert(
+            message_id.into(),
+            PendingChange {
+                id: operation_id,
+                revision: chat.revision,
+                change: change.clone(),
+                uncertain: false,
+            },
+        );
+        if !self.request(Command::Mutate {
+            chat_id: chat_id.into(),
+            message_id: message_id.into(),
+            operation_id,
+            change,
+        }) {
+            self.chats
+                .iter_mut()
+                .find(|c| c.summary.id == chat_id)
+                .unwrap()
+                .pending
+                .remove(message_id);
         }
     }
 
+    fn open_store(&mut self) {
+        self.store_ready = false;
+        self.store = Some(Store::new(
+            self.account.clone(),
+            self.name.clone(),
+            self.prefs
+                .drafts
+                .get(&self.account)
+                .cloned()
+                .unwrap_or_default(),
+            self.wake.clone(),
+        ));
+    }
+
+    fn receive_store(&mut self) {
+        while let Some(event) = self.store.as_ref().and_then(|s| s.events.try_recv().ok()) {
+            self.revision = self.revision.wrapping_add(1);
+            match event {
+                store::Event::Ready { name, chats } => {
+                    self.store_ready = true;
+                    self.prefs.drafts.remove(&self.account);
+                    if self.mode != Mode::Live {
+                        self.mode = Mode::Offline;
+                        self.name = name;
+                    }
+                    for cached in chats {
+                        let id = cached.summary.id.clone();
+                        let index = self
+                            .chats
+                            .iter()
+                            .position(|c| c.summary.id == id)
+                            .unwrap_or_else(|| {
+                                self.chats.push(Chat::new(cached.summary));
+                                self.chats.len() - 1
+                            });
+                        let chat = &mut self.chats[index];
+                        if !self.draft_dirty.contains(&id) {
+                            chat.draft = cached.draft;
+                        }
+                        chat.merge_messages(cached.pending);
+                        chat.recount_unread();
+                    }
+                    self.sort_chats();
+                    if self.selected.is_none()
+                        && let Some(id) = self
+                            .chats
+                            .iter()
+                            .find(|c| !c.summary.is_self)
+                            .or(self.chats.first())
+                            .map(|c| c.summary.id.clone())
+                    {
+                        self.select_chat(id);
+                    } else if let Some(id) = self.selected.clone() {
+                        self.cached_history(&id);
+                    }
+                }
+                store::Event::History {
+                    chat_id,
+                    revision,
+                    mut messages,
+                } => {
+                    if let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == chat_id) {
+                        if revision < chat.history_cleared {
+                            continue;
+                        }
+                        messages.retain(|m| {
+                            m.delivery == model::Delivery::Sent
+                                || !chat.messages.iter().any(|live| live.id == m.id)
+                        });
+                        chat.merge_messages_after(messages, Some(revision));
+                        chat.recount_unread();
+                    }
+                }
+                store::Event::Prepared {
+                    chat_id,
+                    message,
+                    saved,
+                } => {
+                    let sent = saved
+                        && self.mode == Mode::Live
+                        && self.request(Command::Send {
+                            chat_id: chat_id.clone(),
+                            local_id: message.id.clone(),
+                            text: message.text.clone(),
+                        });
+                    if !sent
+                        && let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == chat_id)
+                    {
+                        if let Some(local) = chat.messages.iter_mut().find(|m| m.id == message.id) {
+                            local.delivery = model::Delivery::Unconfirmed;
+                        }
+                        if chat.draft.is_empty() {
+                            chat.draft = message.text;
+                        }
+                        chat.send_error = Some(if saved { "Message saved but not sent. Check your connection before retrying." } else { "Message was not sent: encrypted storage failed. Your text is still here." }.into());
+                        chat.revision = chat.revision.wrapping_add(1);
+                        self.draft_dirty.insert(chat_id.clone());
+                        self.cache_dirty.insert(chat_id);
+                    }
+                }
+                store::Event::Cleared => {}
+                store::Event::Error(error) => {
+                    self.error = Some(error);
+                    // A failed write must not make an in-memory draft look clean.
+                    self.draft_dirty
+                        .extend(self.chats.iter().map(|c| c.summary.id.clone()));
+                }
+            }
+        }
+    }
+
+    fn cached_history(&mut self, id: &str) {
+        if let Some(store) = self.store.as_ref().filter(|_| self.store_ready) {
+            let revision = self
+                .chats
+                .iter()
+                .find(|c| c.summary.id == id)
+                .map_or(0, |c| c.revision);
+            if let Err(error) = store.send(store::Command::History {
+                chat_id: id.into(),
+                revision,
+            }) {
+                self.error = Some(error);
+            }
+        }
+    }
+
+    fn flush_cache(&mut self) {
+        let Some(store) = self.store.as_ref().filter(|_| self.store_ready) else {
+            return;
+        };
+        // Keep the queue bounded and leave room for durable drafts and send preparation.
+        for id in self.cache_dirty.iter().take(8).cloned().collect::<Vec<_>>() {
+            let Some(chat) = self.chats.iter().find(|c| c.summary.id == id) else {
+                self.cache_dirty.remove(&id);
+                continue;
+            };
+            if store
+                .send(store::Command::Save {
+                    summary: chat.summary.clone(),
+                    messages: chat.messages.iter().rev().take(500).cloned().collect(),
+                    remove: self.cache_removed.get(&id).cloned().unwrap_or_default(),
+                })
+                .is_err()
+            {
+                break;
+            }
+            self.cache_dirty.remove(&id);
+            self.cache_removed.remove(&id);
+        }
+    }
+
+    pub fn discard_local_send(&mut self, chat_id: &str, message_id: &str) {
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == chat_id)
+            && chat
+                .messages
+                .iter()
+                .any(|m| m.id == message_id && m.delivery == model::Delivery::Unconfirmed)
+        {
+            chat.remove_message(message_id);
+            self.cache_removed
+                .entry(chat_id.into())
+                .or_default()
+                .push(message_id.into());
+            self.cache_dirty.insert(chat_id.into());
+        }
+    }
+
+    pub fn clear_history(&mut self) {
+        if self
+            .chats
+            .iter()
+            .any(|c| !c.pending.is_empty() || c.loading)
+        {
+            self.error =
+                Some("Wait for current message updates to finish before clearing history.".into());
+            return;
+        }
+        let Some(store) = &self.store else { return };
+        if let Err(error) = store.send(store::Command::ClearHistory) {
+            self.error = Some(error);
+            return;
+        }
+        self.cache_dirty.clear();
+        for chat in &mut self.chats {
+            for message in &chat.messages {
+                if message.delivery == model::Delivery::Sent {
+                    chat.message_versions
+                        .insert(message.id.clone(), chat.revision.wrapping_add(1));
+                }
+            }
+            chat.messages
+                .retain(|m| m.delivery != model::Delivery::Sent);
+            chat.summary.preview.clear();
+            chat.summary.preview_id = None;
+            chat.loaded = false;
+            chat.revision = chat.revision.wrapping_add(1);
+            chat.history_cleared = chat.revision;
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn cancel_read(&mut self) {
+        if let Some((_, active)) = self.read_active.take() {
+            active.store(false, Ordering::Relaxed);
+        }
+    }
+
+    pub fn mark_read(&mut self, id: &str, reading: bool) -> bool {
+        if !reading {
+            self.cancel_read();
+            return false;
+        }
+        if self.mode != Mode::Live {
+            return false;
+        }
+        let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == id) else {
+            return false;
+        };
+        if chat.loading || !chat.loaded || chat.summary.is_self {
+            return false;
+        }
+        let Some(marker) = chat
+            .messages
+            .iter()
+            .filter(|m| m.delivery == model::Delivery::Sent)
+            .map(|m| &m.created_at)
+            .max_by_key(|t| model::timestamp(t))
+            .cloned()
+        else {
+            return false;
+        };
+        if chat.read_pending.is_some()
+            || chat.read_attempted.as_ref() == Some(&marker)
+            || chat
+                .summary
+                .read_at
+                .as_ref()
+                .is_some_and(|read| model::timestamp(read) >= model::timestamp(&marker))
+        {
+            return false;
+        }
+        chat.read_attempted = Some(marker.clone());
+        chat.read_pending = Some(marker.clone());
+        chat.recount_unread();
+        let active = Arc::new(AtomicBool::new(true));
+        self.cancel_read();
+        self.read_active = Some((id.into(), active.clone()));
+        if !self.request(Command::MarkRead {
+            chat_id: id.into(),
+            marker,
+            active,
+            deadline: Instant::now() + Duration::from_secs(1),
+        }) {
+            let chat = self.chats.iter_mut().find(|c| c.summary.id == id).unwrap();
+            chat.read_pending = None;
+            chat.recount_unread();
+        }
+        true
+    }
+
     pub fn tick(&mut self) {
+        if !self.focused {
+            self.cancel_read();
+        }
         self.receive();
+        self.receive_store();
+        self.save_drafts();
+        self.flush_cache();
+        if self.store_ready {
+            for chat in &mut self.chats {
+                if self.hot_chats.contains(&chat.summary.id)
+                    || self.cache_dirty.contains(&chat.summary.id)
+                    || chat.messages.len() <= 1
+                {
+                    continue;
+                }
+                let before = chat.messages.len();
+                let latest = chat.messages.last().map(|m| m.id.clone());
+                chat.messages.retain(|m| {
+                    Some(&m.id) == latest.as_ref()
+                        || m.delivery != model::Delivery::Sent
+                        || chat.pending.contains_key(&m.id)
+                });
+                if chat.messages.len() != before {
+                    chat.loaded = false;
+                    chat.revision = chat.revision.wrapping_add(1);
+                }
+            }
+        }
         self.scan_media();
         let unread = self
             .chats
@@ -1112,11 +1605,30 @@ impl ChatState {
         });
     }
     pub fn refresh_chats(&mut self, next: Option<String>, background: bool) {
-        if self.request(Command::Chats { next, background }) {
+        if self.request(Command::Chats {
+            next,
+            background,
+            started_revision: self.revision,
+        }) {
             self.chats_loading = true;
         }
     }
     pub fn select_chat(&mut self, id: String) {
+        if !self.chats.iter().any(|chat| chat.summary.id == id) {
+            return;
+        }
+        let recent = self
+            .prefs
+            .recent_chats
+            .entry(self.account.clone())
+            .or_default();
+        recent.retain(|chat| chat != &id);
+        recent.insert(0, id.clone());
+        recent.truncate(20);
+        self.cancel_read();
+        self.hot_chats.retain(|chat| chat != &id);
+        self.hot_chats.push_front(id.clone());
+        self.hot_chats.truncate(3);
         self.selected = Some(id.clone());
         self.timelines
             .entry(id.clone())
@@ -1125,8 +1637,9 @@ impl ChatState {
                 ..Default::default()
             });
         if let Some(chat) = self.chats.iter_mut().find(|chat| chat.summary.id == id) {
-            chat.unread = 0;
+            chat.read_attempted = None;
         }
+        self.cached_history(&id);
         if self.mode == Mode::Live {
             let kind = if self
                 .chats
@@ -1147,6 +1660,11 @@ impl ChatState {
             .any(|chat| chat.summary.id == id && chat.loading)
         {
             return;
+        }
+        if matches!(kind, LoadKind::Refresh | LoadKind::Initial)
+            && let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == id)
+        {
+            chat.read_attempted = None;
         }
         if self.request(Command::Messages {
             chat_id: id.clone(),
@@ -1193,7 +1711,7 @@ impl ChatState {
             return;
         };
         let chat = &self.chats[index];
-        if chat.draft.trim().is_empty() || self.mode == Mode::SigningIn {
+        if chat.draft.trim().is_empty() || !matches!(self.mode, Mode::Live | Mode::Demo) {
             return;
         }
         let text = chat.draft.clone();
@@ -1201,21 +1719,12 @@ impl ChatState {
         self.demo_message_id += 1;
         let live = self.mode == Mode::Live;
         let id = format!(
-            "{}-{}",
+            "{}-{}-{}",
             if live { "local" } else { "demo-sent" },
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos(),
             self.demo_message_id
         );
-        if live
-            && !self.request(Command::Send {
-                chat_id: chat_id.clone(),
-                local_id: id.clone(),
-                text: text.clone(),
-            })
-        {
-            return; // The queue is full; the draft stays in the composer.
-        }
-        let chat = &mut self.chats[index];
-        chat.merge_messages(vec![Message {
+        let message = Message {
             id,
             author: if live {
                 self.name.clone()
@@ -1236,7 +1745,28 @@ impl ChatState {
                 model::Delivery::Sent
             },
             ..Default::default()
-        }]);
+        };
+        if live {
+            let result = self
+                .store
+                .as_ref()
+                .filter(|_| self.store_ready)
+                .ok_or_else(|| {
+                    "Encrypted history is not ready. Your draft has not been sent.".to_owned()
+                })
+                .and_then(|s| {
+                    s.send(store::Command::Prepare {
+                        summary: self.chats[index].summary.clone(),
+                        message: Box::new(message.clone()),
+                    })
+                });
+            if let Err(error) = result {
+                self.error = Some(error);
+                return;
+            }
+        }
+        let chat = &mut self.chats[index];
+        chat.merge_messages(vec![message]);
         chat.draft.clear();
         chat.send_error = None;
         self.timelines.entry(chat_id).or_default().jump_to_bottom = true;

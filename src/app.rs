@@ -18,7 +18,18 @@ use std::{
 
 gpui_kit::actions!(
     teamsfast,
-    [Quit, OpenSettings, SearchChats, NewConversation, Refresh]
+    [
+        Quit,
+        OpenSettings,
+        SearchChats,
+        NewConversation,
+        Refresh,
+        SwitchConversation,
+        ShowCommands,
+        ShowShortcuts,
+        ToggleMute,
+        ToggleAppearance
+    ]
 );
 
 #[derive(Clone, Copy, PartialEq)]
@@ -35,9 +46,12 @@ pub(crate) struct Transcript {
 
 pub struct TeamsFast {
     pub(crate) state: ChatState,
+    pub(crate) focus_handle: FocusHandle,
     /// A press in a title area that becomes a window drag once the mouse moves.
     pub(crate) title_drag: bool,
     pub(crate) composer: Entity<TextareaState>,
+    pub(crate) message_edit: Entity<TextareaState>,
+    pub(crate) editing: Option<(String, String)>,
     pub(crate) search: Entity<InputState>,
     pub(crate) client_id: Entity<InputState>,
     pub(crate) tenant: Entity<InputState>,
@@ -67,6 +81,7 @@ impl TeamsFast {
                 .auto_grow(1, 6)
                 .submit_on_enter(true)
         });
+        let message_edit = cx.new(|cx| TextareaState::new(window, cx).auto_grow(3, 10));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search conversations"));
         let client_id = cx.new(|cx| {
             InputState::new(window, cx)
@@ -100,6 +115,7 @@ impl TeamsFast {
                                 .find(|chat| &chat.summary.id == id)
                         {
                             chat.draft = input.read(cx).value().to_string();
+                            this.state.draft_dirty.insert(id.clone());
                             this.dirty = true;
                         }
                         cx.notify();
@@ -108,6 +124,7 @@ impl TeamsFast {
                     _ => {}
                 },
             ),
+            cx.subscribe(&message_edit, |_, _, _, cx| cx.notify()),
             cx.subscribe(&search, |this, input, event, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.state.search = input.read(cx).value().to_string();
@@ -173,8 +190,11 @@ impl TeamsFast {
         });
         let mut app = Self {
             state,
+            focus_handle: cx.focus_handle(),
             title_drag: false,
             composer,
+            message_edit,
+            editing: None,
             search,
             client_id,
             tenant,
@@ -193,6 +213,7 @@ impl TeamsFast {
             _tasks: vec![wake_task, timer],
         };
         app.synchronize(window, cx);
+        app.focus_handle.focus(window, cx);
         app
     }
 
@@ -206,8 +227,8 @@ impl TeamsFast {
 
     fn mark_read(&mut self, window: &Window, cx: &App) -> bool {
         self.state.focused = window.is_window_active();
-        if let Some(id) = &self.state.selected
-            && let Some(transcript) = self.transcripts.get(id)
+        if let Some(id) = self.state.selected.clone()
+            && let Some(transcript) = self.transcripts.get(&id)
         {
             let at_bottom = !transcript.scroll.read(cx).is_scrolled_up();
             self.state
@@ -215,34 +236,31 @@ impl TeamsFast {
                 .entry(id.clone())
                 .or_default()
                 .at_bottom = at_bottom;
-            if at_bottom
-                && self.state.focused
-                && let Some(chat) = self
-                    .state
-                    .chats
-                    .iter_mut()
-                    .find(|chat| &chat.summary.id == id)
-                && chat.unread > 0
-            {
-                chat.unread = 0;
-                return true;
-            }
+            return self.state.mark_read(&id, at_bottom && self.state.focused);
         }
-        false
+        self.state.mark_read("", false)
     }
 
     pub(crate) fn synchronize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.transcript_account != self.state.account {
+            window.close_all_dialogs(cx);
+            self.dialog = None;
             self.transcripts.clear();
             self.transcript_account.clone_from(&self.state.account);
             self.composer_chat = None;
+            self.editing = None;
         }
+        self.transcripts.retain(|id, _| {
+            self.state
+                .chats
+                .iter()
+                .any(|c| &c.summary.id == id && (!c.messages.is_empty() || c.loaded))
+        });
         for chat in &self.state.chats {
             if !chat.loaded && chat.messages.is_empty() {
                 continue;
             }
             let id = chat.summary.id.clone();
-            let next = &chat.messages;
             let transcript = self
                 .transcripts
                 .entry(id.clone())
@@ -252,6 +270,8 @@ impl TeamsFast {
                     revision: u64::MAX,
                 });
             if transcript.revision != chat.revision {
+                let visible = chat.display_messages();
+                let next = &visible;
                 let old = &transcript.messages;
                 let prefix = old
                     .iter()
@@ -366,6 +386,7 @@ impl TeamsFast {
 
     pub(crate) fn select_chat(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.state.select_chat(id);
+        self.dirty = true;
         self.synchronize(window, cx);
         self.composer.focus_handle(cx).focus(window, cx);
         cx.notify();
@@ -481,6 +502,9 @@ impl TeamsFast {
         }
         if self.state.mode == Mode::SigningIn {
             return ("Signing in…".into(), false);
+        }
+        if self.state.mode == Mode::Offline {
+            return ("Cached history · reconnect to send".into(), false);
         }
         if self.state.relay_connected
             && self.state.watch_active > 0

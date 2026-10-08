@@ -5,6 +5,7 @@ use gpui_kit::{
         button::Button,
         h_flex,
         input::Input,
+        kbd::Kbd,
         setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
         v_flex,
     },
@@ -96,7 +97,8 @@ impl Render for PreferencesView {
         };
         let app = owner.read(cx);
         let live = app.state.mode == Mode::Live;
-        let name = if live {
+        let has_account = !app.state.account.is_empty();
+        let name = if has_account {
             app.state.name.clone()
         } else {
             "No account connected".into()
@@ -131,7 +133,7 @@ impl Render for PreferencesView {
                     .item(SettingItem::render(move |_, _, _| {
                         let account_action = account_action.clone();
                         Button::new("account-action")
-                            .label(if live {
+                            .label(if has_account {
                                 "Disconnect account…"
                             } else {
                                 "Connect account"
@@ -141,7 +143,7 @@ impl Render for PreferencesView {
                                 let _ = main_window.update(cx, |_, window, cx| {
                                     let _ = account_action.update(cx, |this, cx| {
                                         this.settings_window = None;
-                                        if live {
+                                        if has_account {
                                             this.open_disconnect(window, cx);
                                         } else {
                                             this.open_connection(window, cx);
@@ -196,17 +198,35 @@ impl Render for PreferencesView {
                     ))
                     .item(SettingItem::new(
                         "Navigation",
-                        SettingField::render(|_, _, _| {
-                            div()
-                                .text_sm()
-                                .child("⌘F Search · ⌘N New chat · ⌘R Refresh · ⌘, Settings")
+                        SettingField::render(|_, window, _| {
+                            let shortcuts: [(&str, Box<dyn Action>); 3] = [
+                                ("Jump to conversation", Box::new(crate::app::SwitchConversation)),
+                                ("Commands", Box::new(crate::app::ShowCommands)),
+                                ("Keyboard shortcuts", Box::new(crate::app::ShowShortcuts)),
+                            ];
+                            v_flex().gap_2().text_sm().children(shortcuts.into_iter().map(|(label, action)| {
+                                h_flex().justify_between().gap_4().child(label)
+                                    .when_some(Kbd::binding_for_action(&*action, Some("TeamsFast"), window), |row, kbd| row.child(kbd))
+                            }))
                         }),
                     )),
             );
+        let clear_history = self.owner.clone();
+        let history_ready = app.state.store_ready;
         let advanced = SettingPage::new("Advanced")
             .icon(IconName::Settings)
             .resettable(false)
             .description("Connection details and diagnostics.")
+            .group(SettingGroup::new().title("Local history")
+                .item(SettingItem::render(move |_, _, _| {
+                    let owner = clear_history.clone();
+                    v_flex().gap_2()
+                        .child("History and drafts are encrypted. Clearing downloads keeps drafts and unconfirmed sends.")
+                        .child(Button::new("clear-history").label("Clear downloaded history").disabled(!history_ready)
+                            .on_click(move |_, _, cx| {
+                                let _ = owner.update(cx, |this, cx| { this.state.clear_history(); cx.notify(); });
+                            }))
+                })))
             .group(
                 SettingGroup::new()
                     .title("Notification relay")
