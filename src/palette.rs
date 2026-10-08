@@ -69,6 +69,7 @@ struct Choice {
     photo: Option<Arc<Image>>,
     unread: usize,
     current: bool,
+    listed: bool,
 }
 
 impl TeamsFast {
@@ -95,6 +96,7 @@ impl TeamsFast {
                         photo: self.state.photo(chat.summary.avatar_user.as_deref()),
                         unread: chat.unread,
                         current,
+                        listed: chat.listed(false),
                     },
                 )
             })
@@ -110,6 +112,7 @@ impl TeamsFast {
             let mut matches: Vec<_> = choices
                 .iter()
                 .enumerate()
+                .filter(|(_, c)| !query.is_empty() || c.listed)
                 .filter_map(|(i, c)| fuzzy_rank(&c.title, &query).map(|score| (score, i)))
                 .collect();
             matches.sort_by_key(|(score, i)| (*score, *i));
@@ -169,7 +172,7 @@ impl TeamsFast {
                         .pb_2()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("Recently visited first · search by name")
+                        .child("Recently visited first · search includes old call-only meetings")
                 })
                 .empty(|_, _, cx| {
                     div()

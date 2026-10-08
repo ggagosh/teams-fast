@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.5.1]
+
+### Fixed
+- Old call-only meeting threads stay out of the default sidebar and switcher after 30 days, while remaining searchable by name. Full history checks preserve meetings with real messages, and drafts and pending sends remain visible.
+
+### Upgrade notes
+- On the first refresh, old call-only meetings may remain listed until background history checks finish. Search by name in the sidebar or ⌘K to reopen them. The 30-day cutoff is a TeamsFast policy, not an exact replica of Teams' private list rules.
+- No reset, sign-out or data deletion is needed; existing history, drafts and pending sends are preserved.
+
 ## [0.5.0]
 
 ### Fixed

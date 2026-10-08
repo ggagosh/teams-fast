@@ -17,12 +17,33 @@ pub(crate) struct ChatSummary {
     /// Absent from a successfully completed /me/chats listing; keep local user data.
     pub unavailable: bool,
     pub is_meeting: bool,
+    /// None until a message is found or a complete Graph history proves it is activity-only.
+    pub has_messages: Option<bool>,
     pub web_url: Option<String>,
     pub members: usize,
     pub avatar_user: Option<String>,
     /// The "Name (You)" chat, pinned first like Teams' Favorites.
     pub is_self: bool,
     pub read_at: Option<String>,
+}
+
+impl ChatSummary {
+    pub fn keep_message_evidence(&mut self, previous: &Self) {
+        if previous.has_messages == Some(true)
+            || (self.has_messages.is_none()
+                && self.preview_id == previous.preview_id
+                && self.updated_at == previous.updated_at)
+        {
+            self.has_messages = previous.has_messages;
+        }
+    }
+
+    pub fn old_meeting(&self) -> bool {
+        // ponytail: local 30-day policy; replace if Graph exposes Teams' default-list eligibility.
+        self.is_meeting
+            && parse_time(&self.updated_at)
+                .is_some_and(|at| OffsetDateTime::now_utc() - at >= time::Duration::days(30))
+    }
 }
 
 pub(crate) struct Chat {
@@ -41,6 +62,9 @@ pub(crate) struct Chat {
     pub read_attempted: Option<String>,
     pub read_revision: u64,
     pub history_cleared: u64,
+    /// Last attempted history inspection, so failures wait for refresh instead of retrying forever.
+    pub activity_check: Option<u64>,
+    pub activity_loading: bool,
 }
 
 impl Chat {
@@ -61,13 +85,25 @@ impl Chat {
             read_attempted: None,
             read_revision: 0,
             history_cleared: 0,
+            activity_check: None,
+            activity_loading: false,
         }
     }
 
     pub fn visible(&self) -> bool {
-        !(self.summary.hidden || self.summary.unavailable)
-            || !self.draft.is_empty()
-            || self.messages.iter().any(|m| m.delivery != Delivery::Sent)
+        !(self.summary.hidden || self.summary.unavailable) || self.has_local_work()
+    }
+
+    pub fn listed(&self, searching: bool) -> bool {
+        self.visible()
+            && (searching
+                || !self.summary.old_meeting()
+                || self.summary.has_messages != Some(false)
+                || self.has_local_work())
+    }
+
+    fn has_local_work(&self) -> bool {
+        !self.draft.is_empty() || self.messages.iter().any(|m| m.delivery != Delivery::Sent)
     }
 
     pub fn merge_messages(&mut self, messages: Vec<Message>) -> Vec<Message> {
@@ -79,6 +115,12 @@ impl Chat {
         messages: Vec<Message>,
         started_revision: Option<u64>,
     ) -> Vec<Message> {
+        if messages
+            .iter()
+            .any(|message| message.delivery == Delivery::Sent && message.is_chat_message())
+        {
+            self.summary.has_messages = Some(true);
+        }
         let mut indices: HashMap<String, usize> = self
             .messages
             .iter()
@@ -136,6 +178,11 @@ impl Chat {
         if let Some(latest) = self.messages.last()
             && timestamp(&latest.created_at) >= timestamp(&self.summary.updated_at)
         {
+            if self.summary.has_messages == Some(false)
+                && self.summary.preview_id.as_ref() != Some(&latest.id)
+            {
+                self.summary.has_messages = None;
+            }
             self.summary.preview = latest.text.replace('\n', " ");
             self.summary.updated_at = latest.created_at.clone();
             self.summary.preview_id = Some(latest.id.clone());

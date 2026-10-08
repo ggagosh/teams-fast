@@ -24,4 +24,12 @@ Although the `messageType` enum lists `typing`, Microsoft's [Teams messaging ove
 
 The same viewpoint provides `isHidden`. TeamsFast honors it and reconciles cached chats only after a complete successful list refresh. [`/me/chats`](https://learn.microsoft.com/en-us/graph/api/chat-list?view=graph-rest-1.0) returns chats the caller belongs to, including meeting chats; it is not a channel listing. Expanded members are capped at 25, so missing the caller from that expansion does not establish non-membership. Local drafts and unconfirmed sends are kept even if a chat becomes hidden or unavailable. See [local history](local-history.md).
 
+### Old call-only meetings
+
+The default sidebar and empty-query ⌘K list omit meeting threads whose latest known activity is at least **30 days old**, but only after a complete successful Graph history scan finds no non-system messages. A last-message preview containing a call event alone is not sufficient: earlier pages may contain real conversation. Unknown dates, unknown message types, failed scans and incomplete scans stay visible. Checks run one page at a time on the existing background worker and do not load the transcript, mark messages read, or change Teams visibility.
+
+This is a **TeamsFast list policy**, not a claim to reproduce Microsoft's undocumented default-list rules. Regular chats, meetings with actual messages, recent meeting activity, drafts and pending sends remain listed. Searching by name in the sidebar or ⌘K includes the filtered old call-only meetings; opening one keeps it selected even after the search is cleared. Server-hidden/unavailable chats retain their existing restrictions.
+
+Classification is cached with encrypted chat summaries. New preview/activity metadata invalidates a negative result; observing any actual message keeps the thread listed even after cached history is trimmed or cleared. A failed scan leaves the chat listed and can be retried with Refresh. No data is deleted and no message POST is repeated.
+
 These findings do not constitute live Graph, relay or macOS notification acceptance.

@@ -658,6 +658,10 @@ impl ChatState {
                 self.baseline_ready = false;
                 self.notice_history = NoticeHistory::default();
                 self.photos.clear();
+                for chat in &mut self.chats {
+                    chat.activity_check = None;
+                    chat.activity_loading = false;
+                }
                 self.chat_scan = None;
                 self.listed_chats = None;
                 self.refresh_chats(None, false);
@@ -723,6 +727,15 @@ impl ChatState {
                             summary.preview_id.clone_from(&chat.summary.preview_id);
                             summary.preview_mine = chat.summary.preview_mine;
                             summary.preview_is_message = chat.summary.preview_is_message;
+                        }
+                        summary.keep_message_evidence(&chat.summary);
+                        if summary.preview_id != chat.summary.preview_id
+                            || summary.updated_at != chat.summary.updated_at
+                        {
+                            chat.revision = chat.revision.wrapping_add(1);
+                            chat.activity_check = None;
+                        } else if !background {
+                            chat.activity_check = None;
                         }
                         chat.summary = summary;
                         chat.recount_unread();
@@ -802,6 +815,14 @@ impl ChatState {
                     chat.loading = false;
                     chat.loaded = true;
                 }
+            }
+            Event::MeetingActivity {
+                chat_id,
+                has_messages,
+                next,
+                started_revision,
+            } => {
+                self.receive_meeting_activity(chat_id, has_messages, next, started_revision);
             }
             Event::Changed {
                 chat_id,
@@ -1096,6 +1117,10 @@ impl ChatState {
                     Operation::Messages(id, kind) => {
                         if let Some(chat) = self.chats.iter_mut().find(|chat| chat.summary.id == id)
                         {
+                            if kind == LoadKind::Activity {
+                                chat.activity_loading = false;
+                                return; // Unknown stays listed; a manual refresh can retry.
+                            }
                             chat.loading = false;
                         }
                         if kind == LoadKind::Catchup {
@@ -1378,14 +1403,17 @@ impl ChatState {
                             cached.summary.unavailable = !seen.contains(&id);
                             self.cache_dirty.insert(id.clone());
                         }
-                        let index = self
-                            .chats
-                            .iter()
-                            .position(|c| c.summary.id == id)
-                            .unwrap_or_else(|| {
-                                self.chats.push(Chat::new(cached.summary));
-                                self.chats.len() - 1
-                            });
+                        let index = if let Some(index) =
+                            self.chats.iter().position(|c| c.summary.id == id)
+                        {
+                            self.chats[index]
+                                .summary
+                                .keep_message_evidence(&cached.summary);
+                            index
+                        } else {
+                            self.chats.push(Chat::new(cached.summary));
+                            self.chats.len() - 1
+                        };
                         let chat = &mut self.chats[index];
                         if !self.draft_dirty.contains(&id) {
                             chat.draft = cached.draft;
@@ -1711,6 +1739,78 @@ impl ChatState {
             dialog.loading = true;
             dialog.search_at = None;
         }
+        self.check_meeting_activity();
+    }
+
+    fn check_meeting_activity(&mut self) {
+        if self.chats_loading
+            || self.change_inflight
+            || self.chats.iter().any(|c| c.loading || c.activity_loading)
+        {
+            return;
+        }
+        let Some(chat) = self.chats.iter_mut().find(|chat| {
+            chat.summary.old_meeting()
+                && !chat.summary.hidden
+                && !chat.summary.unavailable
+                && chat.summary.has_messages.is_none()
+                && chat.activity_check != Some(chat.revision)
+        }) else {
+            return;
+        };
+        if self.worker.as_ref().is_some_and(|worker| {
+            worker
+                .send(Command::Messages {
+                    chat_id: chat.summary.id.clone(),
+                    next: None,
+                    kind: LoadKind::Activity,
+                    started_revision: chat.revision,
+                })
+                .is_ok()
+        }) {
+            chat.activity_check = Some(chat.revision);
+            chat.activity_loading = true;
+        }
+    }
+
+    fn receive_meeting_activity(
+        &mut self,
+        id: String,
+        has_messages: bool,
+        next: Option<String>,
+        started_revision: u64,
+    ) {
+        let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == id) else {
+            return;
+        };
+        if !chat.activity_loading {
+            return;
+        }
+        chat.activity_loading = false;
+        if chat.activity_check != Some(started_revision) || chat.revision != started_revision {
+            return;
+        }
+        if has_messages {
+            chat.summary.has_messages = Some(true);
+        } else if next.is_none() && chat.summary.has_messages != Some(true) {
+            chat.summary.has_messages = Some(false);
+        } else if chat.summary.has_messages.is_none() {
+            // Only the end of a successful full scan can prove absence of actual messages.
+            if self.worker.as_ref().is_some_and(|worker| {
+                worker
+                    .send(Command::Messages {
+                        chat_id: id,
+                        next,
+                        kind: LoadKind::Activity,
+                        started_revision,
+                    })
+                    .is_ok()
+            }) {
+                chat.activity_loading = true;
+            }
+            return;
+        }
+        self.cache_dirty.insert(id);
     }
 
     pub fn sort_chats(&mut self) {
@@ -1759,8 +1859,8 @@ impl ChatState {
         let chat = self
             .chats
             .iter()
-            .find(|chat| chat.visible() && !chat.summary.is_self)
-            .or_else(|| self.chats.iter().find(|chat| chat.visible()));
+            .find(|chat| chat.listed(false) && !chat.summary.is_self)
+            .or_else(|| self.chats.iter().find(|chat| chat.listed(false)));
         if let Some(chat) = chat {
             self.select_chat(chat.summary.id.clone());
         }

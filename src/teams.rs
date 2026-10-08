@@ -52,6 +52,8 @@ pub(crate) enum LoadKind {
     Refresh,
     Older,
     Catchup,
+    /// Read-only history inspection; does not load the transcript or mark anything read.
+    Activity,
 }
 
 #[derive(Clone)]
@@ -156,6 +158,12 @@ pub(crate) enum Event {
         messages: Vec<Message>,
         next: Option<String>,
         kind: LoadKind,
+        started_revision: u64,
+    },
+    MeetingActivity {
+        chat_id: String,
+        has_messages: bool,
+        next: Option<String>,
         started_revision: u64,
     },
     Changed {
@@ -461,6 +469,20 @@ impl Worker {
                                 }
                             };
                             let page: Page<GraphMessage> = session.get(client, url)?;
+                            if kind == LoadKind::Activity {
+                                return Ok(Event::MeetingActivity {
+                                    chat_id,
+                                    // Missing/future types cannot prove a thread is call-only.
+                                    has_messages: page.value.iter().any(|message| {
+                                        !matches!(
+                                            message.message_type.as_deref(),
+                                            Some("systemEventMessage" | "chatEvent")
+                                        )
+                                    }),
+                                    next: page.next,
+                                    started_revision,
+                                });
+                            }
                             Ok(Event::Messages {
                                 chat_id,
                                 messages: page
@@ -2012,6 +2034,8 @@ struct Page<T> {
 struct GraphChat {
     id: String,
     chat_type: Option<String>,
+    created_date_time: Option<String>,
+    last_updated_date_time: Option<String>,
     topic: Option<String>,
     web_url: Option<String>,
     last_message_preview: Option<GraphPreview>,
@@ -2080,8 +2104,22 @@ impl GraphChat {
             .and_then(|p| p.user.as_ref())
             .and_then(|p| p.id.as_deref())
             == Some(me);
+        // Membership/rename dates must not make an old message look newly unread.
         let updated_at = preview
-            .and_then(|p| p.created_date_time.clone())
+            .and_then(|p| p.created_date_time.as_ref())
+            .into_iter()
+            .chain(
+                self.last_updated_date_time
+                    .as_ref()
+                    .filter(|_| !preview_is_message),
+            )
+            .chain(
+                self.created_date_time
+                    .as_ref()
+                    .filter(|_| !preview_is_message),
+            )
+            .max_by_key(|date| crate::model::timestamp(date))
+            .cloned()
             .unwrap_or_default();
         let preview_sender = preview
             .and_then(|p| p.from.as_ref())
@@ -2126,6 +2164,9 @@ impl GraphChat {
             hidden: self.viewpoint.as_ref().is_some_and(|v| v.is_hidden),
             unavailable: false,
             is_meeting: self.chat_type.as_deref() == Some("meeting"),
+            has_messages: preview
+                .is_some_and(|p| p.message_type.as_deref() == Some("message"))
+                .then_some(true),
             web_url: self.web_url,
             read_at: self.viewpoint.and_then(|v| v.last_message_read_date_time),
             members,

@@ -253,12 +253,14 @@ impl TeamsFast {
     }
 
     fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let query = self.state.search.to_lowercase();
+        let query = self.state.search.trim().to_lowercase();
         let rows: Vec<_> = self
             .state
             .chats
             .iter()
-            .filter(|chat| chat.visible() && chat.summary.title.to_lowercase().contains(&query))
+            .filter(|chat| {
+                chat.listed(!query.is_empty()) && chat.summary.title.to_lowercase().contains(&query)
+            })
             .map(|chat| {
                 let id = chat.summary.id.clone();
                 let selected = self.state.selected.as_ref() == Some(&id);
@@ -344,6 +346,7 @@ impl TeamsFast {
                     }))
             })
             .collect();
+        let empty = rows.is_empty();
         let (status, connected) = self.status();
         let status = status.to_owned();
         let header = self.title_area("sidebar-title", cx);
@@ -449,15 +452,18 @@ impl TeamsFast {
                         )
                     })
                     .when(
-                        !self.state.chats.iter().any(|chat| chat.visible())
-                            && !self.state.chats_loading,
+                        empty && !self.state.chats_loading,
                         |list| {
                             list.child(
                                 div()
                                     .p_4()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("No conversations yet."),
+                                    .child(if query.is_empty() {
+                                        "No recent conversations. Search by name for older call-only meetings."
+                                    } else {
+                                        "No conversations match your search."
+                                    }),
                             )
                         },
                     ),
