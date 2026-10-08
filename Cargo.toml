@@ -1,6 +1,6 @@
 [package]
 name = "teamsfast"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A small native Microsoft Teams chat client"
@@ -10,6 +10,10 @@ publish = false
 members = ["relay"]
 default-members = ["."]
 resolver = "3"
+
+[features]
+# The native framework is bundled by scripts/release_macos.sh, not needed by plain cargo run.
+auto-update = ["dep:sparkle-updater"]
 
 [dependencies]
 gpui-kit = "=0.7.1"
@@ -42,6 +46,7 @@ image = { version = "0.25", default-features = false, features = ["gif", "jpeg",
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+sparkle-updater = { version = "=0.1.0", optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter"] }

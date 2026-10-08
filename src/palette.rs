@@ -258,6 +258,11 @@ impl TeamsFast {
                 )
                 .item(
                     CommandItem::new()
+                        .label("Check for updates")
+                        .action(Box::new(crate::app::CheckForUpdates)),
+                )
+                .item(
+                    CommandItem::new()
                         .label("Keyboard shortcuts")
                         .action(Box::new(ShowShortcuts)),
                 )

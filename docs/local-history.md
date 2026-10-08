@@ -30,6 +30,12 @@ Reactions, edits and deletions are overlays on the latest confirmed message, not
 
 Own-message actions are in the context menu. Delete asks for confirmation and uses Graph soft delete. Editing saves plain text and explicitly warns that formatting is removed. Messages containing attachments, inline images or quotes must be edited in Teams rather than silently discarding those parts.
 
+## Quit and update restart
+
+Normal Quit, main-window close and Sparkle's requested restart wait for a worker acknowledgement: current drafts, pending sends and pending local-message removals commit transactionally, then preferences are saved. This is a full user-data snapshot, not just a queue-flush marker after best-effort writes. The UI is modal and incoming model changes pause during that save. Failed saves leave the app open; **Keep working** cancels the quit/restart wait. After cancelling or a save failure, **Check for Updates** retries a postponed update restart. An open dialog must be finished or dismissed before quitting, so an edit is not silently discarded.
+
+In-flight sends may still complete at Microsoft while closing. Their text remains recoverable locally as unconfirmed, and is never automatically resent. OS-initiated termination only has GPUI's 200 ms best-effort shutdown hook; forced termination or power loss cannot guarantee flushing the latest unsaved keystrokes.
+
 ## Read state
 
 The app reads `chatViewpoint.lastMessageReadDateTime` from chat-list responses. It optimistically clears activity when a loaded conversation is active and scrolled to its bottom, then calls `markChatReadForUser` with delegated `Chat.ReadWrite`. Read requests expire after a short queue/token-refresh wait and are canceled when the user leaves the conversation; they are never persisted or replayed offline.

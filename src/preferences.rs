@@ -211,12 +211,54 @@ impl Render for PreferencesView {
                         }),
                     )),
             );
+        let check_updates = self.owner.clone();
+        let read_updates = self.owner.clone();
+        let write_updates = self.owner.clone();
+        let updates_available = app.updates.available();
         let clear_history = self.owner.clone();
         let history_ready = app.state.store_ready;
+        let mut updates_group = SettingGroup::new()
+            .title("App updates")
+            .item(SettingItem::new(
+                "Version",
+                SettingField::render(|_, _, _| div().child(env!("CARGO_PKG_VERSION"))),
+            ));
+        if updates_available {
+            updates_group = updates_group.item(SettingItem::new(
+                "Check automatically",
+                SettingField::switch(
+                    move |cx| {
+                        read_updates
+                            .upgrade()
+                            .is_some_and(|v| v.read(cx).updates.automatic_checks())
+                    },
+                    move |enabled, cx| {
+                        let _ = write_updates.update(cx, |this, cx| {
+                            if let Err(error) = this.updates.set_automatic_checks(enabled) {
+                                this.state.error = Some(error);
+                            }
+                            cx.notify();
+                        });
+                    },
+                ),
+            ));
+        }
         let advanced = SettingPage::new("Advanced")
             .icon(IconName::Settings)
             .resettable(false)
-            .description("Connection details and diagnostics.")
+            .description("Updates, connection details and diagnostics.")
+            .group(updates_group
+                .item(SettingItem::render(move |_, _, _| {
+                    let owner = check_updates.clone();
+                    v_flex().gap_2()
+                        .child(if updates_available { "Signed updates are downloaded by Sparkle. Restart waits for your drafts to be saved." } else { "Automatic updates require the signed release app." })
+                        .child(Button::new("check-updates").label("Check for updates…").disabled(!updates_available)
+                            .on_click(move |_, _, cx| {
+                                let _ = main_window.update(cx, |_, window, cx| {
+                                    let _ = owner.update(cx, |this, cx| this.check_updates(window, cx));
+                                });
+                            }))
+                })))
             .group(SettingGroup::new().title("Local history")
                 .item(SettingItem::render(move |_, _, _| {
                     let owner = clear_history.clone();

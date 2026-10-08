@@ -5,6 +5,7 @@ use crate::{
 };
 use gpui_kit::{
     component::{
+        button::Button,
         input::{InputEvent, InputState, TextareaState},
         message_scroller::MessageScrollerState,
     },
@@ -20,6 +21,7 @@ gpui_kit::actions!(
     teamsfast,
     [
         Quit,
+        CheckForUpdates,
         OpenSettings,
         SearchChats,
         NewConversation,
@@ -66,6 +68,9 @@ pub struct TeamsFast {
     transcript_account: String,
     dirty: bool,
     last_save: Instant,
+    pub(crate) updates: crate::updates::Updates,
+    exiting: bool,
+    exit_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -171,6 +176,12 @@ impl TeamsFast {
                     .await;
                 if this
                     .update_in(cx, |this, window, cx| {
+                        if this.updates.take_restart_request() {
+                            this.request_exit(window, cx);
+                        }
+                        if this.exiting {
+                            return;
+                        }
                         let read_changed = this.mark_read(window, cx);
                         let before = this.state.revision;
                         this.state.tick();
@@ -188,6 +199,17 @@ impl TeamsFast {
                 }
             }
         });
+        let mut subscriptions = subscriptions;
+        subscriptions.push(cx.on_app_quit(|this, _| {
+            // OS-initiated termination bypasses our Quit action. GPUI allows only 200 ms here;
+            // normal Quit, window close and Sparkle restart use the acknowledged gate below.
+            let response = this.state.save_before_exit().ok();
+            async move {
+                if let Some(response) = response {
+                    let _ = response.recv().await;
+                }
+            }
+        }));
         let mut app = Self {
             state,
             focus_handle: cx.focus_handle(),
@@ -209,6 +231,9 @@ impl TeamsFast {
             transcript_account: String::new(),
             dirty: false,
             last_save: Instant::now(),
+            updates: crate::updates::Updates::new(demo),
+            exiting: false,
+            exit_task: None,
             _subscriptions: subscriptions,
             _tasks: vec![wake_task, timer],
         };
@@ -217,7 +242,130 @@ impl TeamsFast {
         app
     }
 
+    /// Register once, including app-global actions so menus work from Settings and modal inputs.
+    pub fn register_lifecycle(view: &Entity<Self>, window: &mut Window, cx: &mut App) {
+        let weak = view.downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let _ = weak.update(cx, |this, cx| this.request_exit(window, cx));
+            false
+        });
+        let handle = window.window_handle();
+        let weak = view.downgrade();
+        cx.on_action(move |_: &Quit, cx| {
+            let weak = weak.clone();
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.request_exit(window, cx));
+                });
+            });
+        });
+        let weak = view.downgrade();
+        cx.on_action(move |_: &CheckForUpdates, cx| {
+            let weak = weak.clone();
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.check_updates(window, cx));
+                });
+            });
+        });
+    }
+
+    pub(crate) fn check_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.exiting {
+            return;
+        }
+        if self.updates.restart_pending() {
+            self.request_exit(window, cx);
+        } else {
+            window.close_all_dialogs(cx);
+            self.dialog = None;
+            if let Err(error) = self.updates.check() {
+                self.state.error = Some(error);
+            }
+            cx.notify();
+        }
+    }
+
+    fn request_exit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.exiting {
+            return;
+        }
+        if window.has_active_dialog(cx) {
+            self.state.error = Some(if self.updates.restart_pending() {
+                "Finish or dismiss the open dialog, then choose Check for Updates to retry the restart."
+            } else {
+                "Finish or dismiss the open dialog before quitting. Your text is still here."
+            }.into());
+            cx.notify();
+            return;
+        }
+        // Settings can change account/drafts too; don't let it race the snapshot.
+        if let Some(settings) = self.settings_window.take() {
+            let _ = settings.update(cx, |_, window, _| window.remove_window());
+        }
+        let response = match self.state.save_before_exit() {
+            Ok(response) => response,
+            Err(error) => {
+                self.state.error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        self.exiting = true;
+        window.close_all_dialogs(cx);
+        self.dialog = None;
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let weak = weak.clone();
+            dialog
+                .title("Saving before closing…")
+                .close_button(false)
+                .keyboard(false)
+                .overlay_closable(false)
+                .child(
+                    "Saving drafts and unconfirmed sends. The app will stay open if saving fails.",
+                )
+                .child(Button::new("cancel-exit").label("Keep working").on_click(
+                    move |_, window, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.exit_task = None;
+                            this.exiting = false;
+                            window.close_dialog(cx);
+                            cx.notify();
+                        });
+                    },
+                ))
+        });
+        self.exit_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = response.recv().await.unwrap_or_else(|_| {
+                Err(
+                    "Storage stopped before saving completed. Keep the app open and try again."
+                        .into(),
+                )
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                window.close_dialog(cx);
+                this.exiting = false;
+                match result {
+                    Ok(()) => {
+                        this.dirty = false;
+                        if !this.updates.resume_restart() {
+                            cx.quit();
+                        }
+                    }
+                    Err(error) => {
+                        this.state.error = Some(error);
+                        cx.notify();
+                    }
+                }
+            });
+        }));
+    }
+
     pub(crate) fn drain_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.exiting {
+            return;
+        }
         self.mark_read(window, cx);
         self.state.tick();
         self.synchronize(window, cx);

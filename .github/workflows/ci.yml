@@ -30,6 +30,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Check native updater integration
+        run: |
+          export SPARKLE_FRAMEWORK_PATH="$(scripts/setup_sparkle.sh)"
+          cargo clippy --workspace --all-targets --features auto-update --locked -- -D warnings
       - name: Relay tests
         run: cargo test -p teamsfast-relay --locked
       - name: Relay builds alone from relay/Cargo.lock (as in its Dockerfile)

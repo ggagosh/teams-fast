@@ -15,6 +15,12 @@ pub(crate) struct CachedChat {
     pub pending: Vec<Message>,
 }
 
+pub(crate) struct ExitSnapshot {
+    pub prefs: settings::Settings,
+    pub chats: Vec<CachedChat>,
+    pub removed: Vec<(String, Vec<String>)>,
+}
+
 pub(crate) enum Command {
     Name(String),
     Save {
@@ -39,6 +45,10 @@ pub(crate) enum Command {
         message_id: String,
     },
     ClearHistory,
+    SaveBeforeExit {
+        snapshot: Box<ExitSnapshot>,
+        reply: async_channel::Sender<Result<(), String>>,
+    },
 }
 
 pub(crate) enum Event {
@@ -96,6 +106,10 @@ impl Store {
             while let Ok(command) = requests.recv() {
                 let result: Result<()> = (|| {
                     match command {
+                        Command::SaveBeforeExit { snapshot, reply } => {
+                            let result = save_before_exit(&mut db, *snapshot).map_err(|_| "Could not save drafts before quitting. Check free disk space and keep the app open; your text is still here.".to_owned());
+                            let _ = reply.try_send(result);
+                        }
                         Command::Name(name) => {
                             db.execute(
                                 "INSERT OR REPLACE INTO metadata VALUES ('name', ?1)",
@@ -220,6 +234,27 @@ impl Store {
             "Local storage is busy or unavailable. Keep the app open and try again.".into()
         })
     }
+}
+
+fn save_before_exit(db: &mut Connection, snapshot: ExitSnapshot) -> Result<()> {
+    let tx = db.transaction()?;
+    for (chat, ids) in snapshot.removed {
+        for id in ids {
+            tx.execute(
+                "DELETE FROM messages WHERE chat=?1 AND id=?2",
+                params![chat, id],
+            )?;
+        }
+    }
+    for chat in snapshot.chats {
+        tx.execute("INSERT INTO chats(id,data,draft) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data,draft=excluded.draft",
+            params![chat.summary.id, serde_json::to_string(&chat.summary)?, chat.draft])?;
+        for message in chat.pending {
+            save_message(&tx, &chat.summary.id, &message)?;
+        }
+    }
+    tx.commit()?;
+    snapshot.prefs.save().map_err(anyhow::Error::msg)
 }
 
 fn open(account: &str) -> Result<Connection> {

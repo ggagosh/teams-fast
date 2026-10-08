@@ -18,6 +18,7 @@ The desktop is one Rust package using GPUI Kit 0.7.1 and GPUI Fast 0.1.4. Fast i
 | `src/settings.rs` | Public JSON preferences, legacy import, OS credential-store access |
 | `src/store.rs` | Account-scoped SQLCipher history/drafts, durable pending sends, off-thread storage |
 | `src/notifications.rs` | Native notifications and click events |
+| `src/updates.rs` | Main-thread Sparkle controller and deferred restart; no custom installer |
 | `relay/src/lib.rs`, `relay/src/server.rs` | Shared wire types and the independently deployed relay |
 
 ## Rendering and background work
@@ -68,6 +69,12 @@ Measured on the owner's account, comparable but not identical (window size and t
 Enter submits and Shift+Enter adds a newline. The message appears in the timeline immediately (dimmed, "Sending…") and the composer clears, so several messages can be queued; they are sent in order. Microsoft's response replaces the local placeholder. On failure or timeout the bubble is marked "Not confirmed" and its text is restored to an empty composer; a timeout can still mean delivery, so nothing is resent automatically. The encrypted store must commit the in-flight text before the POST is allowed. Interrupted sends restore as unconfirmed on restart and are never automatically replayed. Message POSTs are never automatically repeated. Messages merge by Graph ID and sort using parsed RFC 3339 timestamps.
 
 Refresh tokens and the rich-notification key live only in the macOS Keychain (service `dev.teamsfast.desktop`). Debug builds are signed with the developer's Apple Development identity and a designated requirement on identifier and team, so rebuilt binaries keep Keychain access without prompts. Secrets from the earlier debug-only `dev-secrets.json` move into the Keychain on first read, and the file is deleted once empty. Access tokens stay in worker memory. Public settings, appearance, notification preferences, recent conversation IDs, legacy drafts awaiting migration, and mutes are saved to `settings.json` via a temporary file and rename. If that file is absent, the app imports `settings-v1` from legacy `app.ron`. On macOS these files live under `~/Library/Application Support/TeamsFast/`. New drafts, pending sends and bounded history are stored in account-scoped SQLCipher databases with random Keychain-held keys. Legacy drafts leave the JSON file only after encrypted migration commits. See [local history](local-history.md) for retention, offline, encryption and recovery details. Explicit demo runs do not load/save account settings.
+
+## Application updates and shutdown
+
+Release builds enable the `auto-update` Cargo feature and embed Sparkle 2.10.0 through the safe `sparkle-updater` API. Sparkle owns checks, download, signature verification, native update UI and complete-bundle replacement. Its restart continuation stays on the main thread until the storage worker acknowledges a full snapshot of drafts/unconfirmed sends and saved preferences. Normal Quit and main-window close use the same asynchronous gate. While saving, the main UI is modal and model event application is paused; errors or cancellation leave the app running. Open dialogs must first be finished or dismissed, avoiding implicit loss of edit text.
+
+OS-initiated termination is different: GPUI's `on_app_quit` offers only 200 ms of best-effort cleanup. That hook submits the same snapshot, but cannot veto termination or promise a successful save under forced quit, hung disks or power loss. See [updates](updates.md) for signing, feed publication and acceptance.
 
 ## Live updates and notifications
 

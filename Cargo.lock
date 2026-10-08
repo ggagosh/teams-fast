@@ -6901,6 +6901,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sparkle-updater"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6d60731c5488e4f3230adcb49041f8f03a49fd546765c896290e07fa3baf949"
+dependencies = [
+ "block2 0.6.2",
+ "log",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7313,7 +7329,7 @@ dependencies = [
 
 [[package]]
 name = "teamsfast"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -7343,6 +7359,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.10.9",
+ "sparkle-updater",
  "teamsfast-relay",
  "time",
  "x509-cert",

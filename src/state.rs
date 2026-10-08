@@ -266,6 +266,55 @@ impl ChatState {
             }
         }
     }
+    /// Queue a complete user-data snapshot, not just a barrier behind best-effort cache writes.
+    /// The caller must keep editing disabled until this acknowledges success or is cancelled.
+    pub fn save_before_exit(&self) -> Result<async_channel::Receiver<Result<(), String>>, String> {
+        let (reply, response) = async_channel::bounded(1);
+        if self.force_demo {
+            let _ = reply.try_send(Ok(()));
+        } else if !self.can_save_settings {
+            return Err(
+                "Saved settings could not be read. Keep the app open to preserve unsaved work."
+                    .into(),
+            );
+        } else if self.account.is_empty() {
+            let prefs = self.prefs.clone();
+            std::thread::spawn(move || {
+                let _ = reply.try_send(prefs.save());
+            });
+        } else {
+            let store = self.store.as_ref().filter(|_| self.store_ready)
+                .ok_or("Encrypted history is not ready. Keep the app open and wait or restore Keychain access before quitting.")?;
+            let chats = self
+                .chats
+                .iter()
+                .map(|chat| store::CachedChat {
+                    summary: chat.summary.clone(),
+                    draft: chat.draft.clone(),
+                    pending: chat
+                        .messages
+                        .iter()
+                        .filter(|m| m.delivery != model::Delivery::Sent)
+                        .cloned()
+                        .collect(),
+                })
+                .collect();
+            store.send(store::Command::SaveBeforeExit {
+                snapshot: Box::new(store::ExitSnapshot {
+                    prefs: self.prefs.clone(),
+                    chats,
+                    removed: self
+                        .cache_removed
+                        .iter()
+                        .map(|(id, removed)| (id.clone(), removed.clone()))
+                        .collect(),
+                }),
+                reply,
+            })?;
+        }
+        Ok(response)
+    }
+
     pub fn save_drafts(&mut self) {
         let Some(store) = self.store.as_ref().filter(|_| self.store_ready) else {
             return;

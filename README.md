@@ -14,12 +14,13 @@ The official Teams app runs a web app in a WebView. On a typical Mac it uses abo
 2. Unzip it and move `TeamsFast.app` to **Applications**.
 3. Open it and choose **Sign in with Microsoft**. Your browser handles the sign-in, then your chats appear.
 
-Releases are signed with Developer ID and notarized by Apple. To get alerts and the Dock badge, allow TeamsFast in **System Settings → Notifications**.
+Releases are signed with Developer ID and notarized by Apple. Version 0.4.0 adds automatic updates through Sparkle: install it manually once, then use **TeamsFast → Check for Updates…** or let automatic checks notify you. Update restarts wait for drafts and unconfirmed sends to be saved. To get alerts and the Dock badge, allow TeamsFast in **System Settings → Notifications**.
 
 Requirements: macOS 11 or later and a Microsoft 365 work or school account in a tenant where the TeamsFast app registration is allowed. Teams Personal isn't supported by Microsoft's API.
 
 ## Features
 
+- Signed automatic updates for the complete macOS app
 - Chats with search, unread counts, mute, and a Dock badge
 - ⌘K conversation switcher, ⌘⇧P command palette, and ⌘/ shortcut help
 - Message history with formatting, inline images, link previews, reactions, and attachment cards
@@ -46,7 +47,7 @@ Not included: calls, meetings, channels, sending files, rich-text editing, and l
 - **A tiny relay for push.** Graph delivers change notifications to a webhook, and a desktop app can't receive webhooks. [`relay/`](relay) is a small Rust server that keeps a short in-memory queue and holds a long-poll open to the app. Graph encrypts each message with a key that only your Mac has, so the relay can't read message content. To register, the app presents your Microsoft ID token, which can't access Teams.
 - **Memory.** Images are decoded once at display size and kept within a fixed budget.
 
-See [architecture](docs/architecture.md) and [local history, recovery, and read-state limitations](docs/local-history.md) for details.
+See [architecture](docs/architecture.md), [automatic updates](docs/updates.md), and [local history, recovery, and read-state limitations](docs/local-history.md) for details.
 
 ## Development
 

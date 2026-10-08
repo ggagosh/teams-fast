@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Added
+- Native Sparkle updates: automatic checks/downloads, signed update feeds, and Check for Updates in the app menu, command palette and Settings.
+- Quitting, closing the main window and update restarts wait for encrypted drafts and unconfirmed sends to be saved; failed saves leave the app open.
+
+### Upgrade notes
+- Install this version manually once. Earlier versions have no updater; future releases can update the complete signed app in place.
+- Update downloads and feeds are signed separately from Apple code signing. Apple Silicon and Intel use separate feeds.
+
+## [0.3.0]
+
 ### Added
 - ⌘K conversation switching with recent chats, fuzzy name search, avatars and unread hints.
 - ⌘⇧P app commands, ⌘/ shortcut help, and native Go and Help menus.

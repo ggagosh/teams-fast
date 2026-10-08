@@ -15,5 +15,6 @@ mod store;
 mod teams;
 mod thumbnail;
 mod ui;
+mod updates;
 
 pub(crate) type Wake = async_channel::Sender<()>;

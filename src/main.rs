@@ -16,7 +16,6 @@ fn main() -> anyhow::Result<()> {
                     "../assets/fonts/NotoSansGeorgian.ttf"
                 ))])
                 .expect("bundled Georgian font");
-            cx.on_action(|_: &teamsfast::app::Quit, cx| cx.quit());
             cx.bind_keys([
                 KeyBinding::new("cmd-q", teamsfast::app::Quit, None),
                 KeyBinding::new("cmd-,", teamsfast::app::OpenSettings, Some("TeamsFast")),
@@ -45,6 +44,7 @@ fn main() -> anyhow::Result<()> {
                     disabled: false,
                     items: vec![
                         MenuItem::action("Settings…", teamsfast::app::OpenSettings),
+                        MenuItem::action("Check for Updates…", teamsfast::app::CheckForUpdates),
                         MenuItem::separator(),
                         MenuItem::action("Quit TeamsFast", teamsfast::app::Quit),
                     ],
@@ -98,7 +98,9 @@ fn main() -> anyhow::Result<()> {
             };
             gpui_kit::open_window(options, cx, |window, cx| {
                 window.set_window_title("TeamsFast");
-                cx.new(|cx| teamsfast::app::TeamsFast::new(demo, window, cx))
+                let view = cx.new(|cx| teamsfast::app::TeamsFast::new(demo, window, cx));
+                teamsfast::app::TeamsFast::register_lifecycle(&view, window, cx);
+                view
             })
             .expect("open TeamsFast window");
             cx.on_window_closed(|cx, _| {
