@@ -16,8 +16,6 @@ use std::{
 };
 use time::UtcOffset;
 
-/// Profile photos need User.ReadBasic.All. Enable together with the photo `SCOPES` in teams.rs.
-const PROFILE_PHOTOS: bool = false;
 /// Decoded message images kept in memory (and GPU textures). The open conversation is exempt.
 const MEDIA_BUDGET: usize = 48 * 1024 * 1024;
 
@@ -49,7 +47,6 @@ pub(crate) struct ChatState {
     pub name: String,
     pub user_id: String,
     pub account: String,
-    pub can_create: bool,
     pub prefs: Settings,
     pub next_chats: Option<String>,
     pub chats_loading: bool,
@@ -58,7 +55,6 @@ pub(crate) struct ChatState {
     pub error: Option<String>,
     pub disconnect_open: bool,
     pub device_code: Option<(String, String)>,
-    pub request_create_scope: bool,
     pub new_chat: Option<NewChat>,
     pub demo_message_id: u64,
     pub timelines: HashMap<String, Timeline>,
@@ -139,7 +135,7 @@ impl ChatState {
             app.mode = Mode::SigningIn;
             app.chats.clear();
             app.selected = None;
-            app.request(Command::Resume(app.account_config(false)));
+            app.request(Command::Resume(app.account_config()));
         }
         app
     }
@@ -156,7 +152,6 @@ impl ChatState {
             name: String::new(),
             user_id: String::new(),
             account: String::new(),
-            can_create: false,
             prefs: Settings {
                 tenant: "organizations".into(),
                 ..Default::default()
@@ -168,7 +163,6 @@ impl ChatState {
             error: None,
             disconnect_open: false,
             device_code: None,
-            request_create_scope: false,
             new_chat: None,
             demo_message_id: 0,
             timelines: HashMap::new(),
@@ -206,12 +200,11 @@ impl ChatState {
         }
     }
 
-    pub fn account_config(&self, create_chats: bool) -> AccountConfig {
+    pub fn account_config(&self) -> AccountConfig {
         AccountConfig {
             client_id: self.prefs.client_id.trim().into(),
             tenant: self.prefs.tenant.trim().into(),
             remember: true,
-            create_chats,
             use_code: false,
         }
     }
@@ -219,8 +212,7 @@ impl ChatState {
         self.photos.get(user_id?).cloned().flatten()
     }
     fn request_photo(&mut self, user_id: &str) {
-        if PROFILE_PHOTOS
-            && self.mode == Mode::Live
+        if self.mode == Mode::Live
             && !user_id.is_empty()
             && !self.photos.contains_key(user_id)
             && let Some(worker) = &self.worker
@@ -275,7 +267,7 @@ impl ChatState {
     }
     pub fn use_demo(&mut self, forget: bool) {
         self.save_drafts();
-        let config = self.account_config(self.can_create);
+        let config = self.account_config();
         if let Some(worker) = &self.worker {
             worker.reset();
         }
@@ -306,7 +298,6 @@ impl ChatState {
         self.device_code = None;
         self.error = None;
         self.disconnect_open = false;
-        self.can_create = false;
         self.timelines.clear();
         self.relay_connected = false;
         self.watch_active = 0;
@@ -318,7 +309,7 @@ impl ChatState {
     pub fn start_sign_in(&mut self, use_code: bool) {
         let config = AccountConfig {
             use_code,
-            ..self.account_config(self.request_create_scope)
+            ..self.account_config()
         };
         self.prefs.remember = true;
         if let Err(error) = crate::teams::validate_registration(&config.client_id, &config.tenant) {
@@ -515,14 +506,9 @@ impl ChatState {
         match event {
             Event::DeviceCode { user_code, url } => self.device_code = Some((user_code, url)),
             Event::SignInPage(url) => self.sign_in_page = Some(url),
-            Event::Connected {
-                user_id,
-                name,
-                can_create,
-            } => {
+            Event::Connected { user_id, name } => {
                 self.user_id = user_id;
                 self.name = name;
-                self.can_create = can_create;
                 self.account = format!(
                     "{}/{}/{}",
                     self.prefs.tenant, self.prefs.client_id, self.user_id
@@ -833,6 +819,10 @@ impl ChatState {
                 }
                 match operation {
                     Operation::SignIn => {
+                        // Microsoft's error text (e.g. an AADSTS code); no tokens.
+                        if crate::teams::tracing() {
+                            eprintln!("TeamsFast sign-in failed: {}", error.message);
+                        }
                         self.use_demo(false);
                         self.error = Some(error.message);
                     }

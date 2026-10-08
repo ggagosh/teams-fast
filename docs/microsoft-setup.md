@@ -7,9 +7,8 @@ TeamsFast targets Microsoft 365 work/school accounts in the public commercial cl
 1. Create an app registration in Microsoft Entra. For one tenant, select **Accounts in this organizational directory only**.
 2. Copy the **Application (client) ID** and **Directory (tenant) ID**. These are public configuration; never put a client secret in the desktop app.
 3. Under **Authentication**, add the platform **Mobile and desktop applications** with the redirect URI `http://localhost` (any port is accepted for loopback). Also enable **Allow public client flows**, which the "Sign in with a code instead" fallback needs.
-4. Add Graph **delegated** permissions `User.Read`, `Chat.Read`, and `ChatMessage.Send`. The app also requests `openid` (an ID token for the relay) and `offline_access` (refresh tokens). Profile photos need `User.ReadBasic.All`; they are disabled in code until it is added (see `SCOPES` in `src/teams.rs`).
-5. To find people and start chats, additionally allow `User.ReadBasic.All` and `Chat.Create`. The app requests these when you choose **Enable starting chats**.
-6. Complete consent according to tenant policy.
+4. Add Microsoft Graph **delegated** permissions: `openid`, `offline_access`, `User.Read`, `User.ReadBasic.All` (profile photos, people search), `Chat.ReadWrite`, `Chat.Create`, and `ChatMessage.Send`. The app requests these in one sign-in. For planned features, also add `Presence.Read.All`, `Presence.ReadWrite`, `Files.Read.All`, and `Files.ReadWrite`.
+5. Complete consent according to tenant policy.
 
 ## Sign in
 

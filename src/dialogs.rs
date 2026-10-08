@@ -69,16 +69,6 @@ fn new_chat(dialog: Dialog, view: &WeakEntity<TeamsFast>, _: &mut Window, cx: &m
     let Some(state) = &app.state.new_chat else {
         return dialog;
     };
-    if app.state.mode == Mode::Live && !app.state.can_create {
-        let view = view.clone();
-        return dialog.title("Start a conversation").width(px(450.))
-            .child("Allow TeamsFast to find people and create chats by signing in with the additional permissions.")
-            .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Uses Chat.Create and User.ReadBasic.All."))
-            .footer(Button::new("enable-creation").primary().label("Enable starting chats").on_click(move|_,window,cx|{
-                window.close_dialog(cx);
-                let _=view.update(cx,|this,cx|{this.state.request_create_scope=true;this.start_sign_in(false,window,cx);});
-            }));
-    }
     let query = app.people_query.clone();
     let topic = app.topic.clone();
     let selected = state.selected.clone();

@@ -125,8 +125,16 @@ fn directory() -> Result<std::path::PathBuf, String> {
     }
 }
 
+/// Debug and release builds are signed by different identities, so each keeps its own Keychain
+/// items; sharing them makes macOS ask for the password whenever the other build wrote last.
+const SERVICE: &str = if cfg!(debug_assertions) {
+    "dev.teamsfast.desktop.debug"
+} else {
+    "dev.teamsfast.desktop"
+};
+
 fn entry(account: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new("dev.teamsfast.desktop", account)
+    keyring::Entry::new(SERVICE, account)
         .map_err(|e| format!("Could not open the OS credential store: {e}"))
 }
 

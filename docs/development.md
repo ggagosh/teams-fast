@@ -9,7 +9,7 @@ just dev --demo --compact
 just check
 ```
 
-Debug builds compile dependencies with `opt-level = 3`, because GPUI is unusably slow unoptimized. `cargo run` and `just app` sign the debug build with your Apple Development identity (`scripts/sign_dev.sh`, through the Cargo runner in `.cargo/config.toml`). Keychain access therefore survives rebuilds; set `TEAMSFAST_DEV_SIGNING_IDENTITY` to choose another identity. The sign-in and the rich-notification key live in the Keychain under `dev.teamsfast.desktop`.
+Debug builds compile dependencies with `opt-level = 3`, because GPUI is unusably slow unoptimized. `cargo run` and `just app` sign the debug build with your Apple Development identity (`scripts/sign_dev.sh`, through the Cargo runner in `.cargo/config.toml`). Keychain access therefore survives rebuilds; set `TEAMSFAST_DEV_SIGNING_IDENTITY` to choose another identity. Debug builds keep their sign-in and rich-notification key in the Keychain under `dev.teamsfast.desktop.debug`, separate from the release app's `dev.teamsfast.desktop`. The two builds are signed by different identities, so shared items would make macOS ask for the password whenever the other build had written last. Sign in once in each.
 
 `just dev` loads the ignored `.env`; copy `.env.example` for a new checkout. It holds only public IDs and the relay URL. Release builds bake the same values in at compile time from the CI variables, so the app opens straight to **Sign in with Microsoft**. Plain Cargo uses inherited environment variables. Demo mode ignores saved account settings and does not persist its changes. Compact mode opens at 780 × 580 logical pixels; the minimum window is 760 × 520.
 

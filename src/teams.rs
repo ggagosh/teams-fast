@@ -22,12 +22,10 @@ use std::{
 };
 use teamsfast_relay::Registration;
 
-// `openid` adds an ID token, which the relay accepts instead of a shared key.
-const SCOPES: &str = "openid https://graph.microsoft.com/User.Read https://graph.microsoft.com/Chat.Read https://graph.microsoft.com/ChatMessage.Send offline_access";
-// Profile photos are disabled until the app registration has User.ReadBasic.All. To enable, use
-// this scope list and set `PROFILE_PHOTOS` in state.rs.
-// const SCOPES: &str = "openid https://graph.microsoft.com/User.Read https://graph.microsoft.com/User.ReadBasic.All https://graph.microsoft.com/Chat.Read https://graph.microsoft.com/ChatMessage.Send offline_access";
-const CREATION_SCOPES: &str = "openid https://graph.microsoft.com/User.Read https://graph.microsoft.com/Chat.Read https://graph.microsoft.com/ChatMessage.Send https://graph.microsoft.com/Chat.Create https://graph.microsoft.com/User.ReadBasic.All offline_access";
+// Delegated Graph permissions (all consented in the app registration). `openid` adds an ID token,
+// which the relay accepts instead of a shared key. `Chat.ReadWrite` covers reading chats and, later,
+// read state and edits; `User.ReadBasic.All` covers profile photos and people search.
+const SCOPES: &str = "openid offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/User.ReadBasic.All https://graph.microsoft.com/Chat.ReadWrite https://graph.microsoft.com/Chat.Create https://graph.microsoft.com/ChatMessage.Send";
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// Graph ID of the "Name (You)" self chat.
 const SELF_CHAT: &str = "48:notes";
@@ -39,17 +37,12 @@ pub(crate) struct AccountConfig {
     pub client_id: String,
     pub tenant: String,
     pub remember: bool,
-    pub create_chats: bool,
     /// Device-code sign-in instead of the browser redirect (another device, or no localhost redirect).
     pub use_code: bool,
 }
 impl AccountConfig {
     fn scopes(&self) -> &'static str {
-        if self.create_chats {
-            CREATION_SCOPES
-        } else {
-            SCOPES
-        }
+        SCOPES
     }
 }
 
@@ -142,7 +135,6 @@ pub(crate) enum Event {
     Connected {
         user_id: String,
         name: String,
-        can_create: bool,
     },
     Chats {
         chats: Vec<ChatSummary>,
@@ -345,7 +337,6 @@ impl Worker {
                         if let Err(error) = signed_in.save() {
                             emit(Event::Warning(error));
                         }
-                        let can_create = signed_in.config.create_chats;
                         if let Ok(mut shared) = shared_session.lock() {
                             *shared = Some((epoch, signed_in.clone()));
                         }
@@ -355,7 +346,6 @@ impl Worker {
                         return Ok(Event::Connected {
                             user_id: user.id,
                             name: user.display_name,
-                            can_create,
                         });
                     }
                     let session = session
@@ -459,11 +449,6 @@ impl Worker {
                             })
                         }
                         Command::People { query } => {
-                            if !session.config.create_chats {
-                                return Err(Failure::new(
-                                    "Enable starting chats by signing in with the additional directory and chat permissions.",
-                                ));
-                            }
                             let query = query.trim().chars().take(100).collect::<String>();
                             let literal = query.replace('\'', "''");
                             let mut url = graph_url(&["users"])?;
@@ -480,11 +465,6 @@ impl Worker {
                             })
                         }
                         Command::Create { mut people, topic } => {
-                            if !session.config.create_chats {
-                                return Err(Failure::new(
-                                    "Sign in with permission to create chats first.",
-                                ));
-                            }
                             people.retain(|id| id != &session.user_id);
                             people.sort();
                             people.dedup();
@@ -1098,7 +1078,6 @@ type SharedSession = Arc<Mutex<Option<(u64, Session)>>>;
 #[derive(Serialize, Deserialize)]
 struct SavedLogin {
     refresh_token: String,
-    create_chats: bool,
 }
 impl Session {
     fn from_token(config: AccountConfig, token: Token) -> Self {
@@ -1126,7 +1105,6 @@ impl Session {
             .ok_or_else(|| Failure::new("No saved sign-in. Connect your account to continue."))?;
         let saved: SavedLogin = serde_json::from_str(&saved)
             .map_err(|_| Failure::new("The saved sign-in is unreadable. Sign in again."))?;
-        config.create_chats = saved.create_chats;
         config.remember = true;
         let mut session = Self::from_token(
             config,
@@ -1159,7 +1137,6 @@ impl Session {
             };
             serde_json::to_string(&SavedLogin {
                 refresh_token: refresh_token.clone(),
-                create_chats: self.config.create_chats,
             })
             .map_err(|_| "Could not encode the saved sign-in.".to_owned())?
         };
