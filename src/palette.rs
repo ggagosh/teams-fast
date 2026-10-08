@@ -79,6 +79,7 @@ impl TeamsFast {
             .state
             .chats
             .iter()
+            .filter(|chat| chat.visible())
             .enumerate()
             .map(|(index, chat)| {
                 let id = &chat.summary.id;

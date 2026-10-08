@@ -2011,6 +2011,7 @@ struct Page<T> {
 #[serde(rename_all = "camelCase")]
 struct GraphChat {
     id: String,
+    chat_type: Option<String>,
     topic: Option<String>,
     web_url: Option<String>,
     last_message_preview: Option<GraphPreview>,
@@ -2021,12 +2022,17 @@ struct GraphChat {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GraphViewpoint {
+    #[serde(default)]
+    is_hidden: bool,
     last_message_read_date_time: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GraphPreview {
     id: Option<String>,
+    message_type: Option<String>,
+    #[serde(default)]
+    is_deleted: bool,
     body: Option<Body>,
     created_date_time: Option<String>,
     from: Option<Author>,
@@ -2053,11 +2059,21 @@ impl GraphChat {
         // Exact IDs only: member lists are not reliable enough to infer a chat with yourself.
         let is_self = self.id == SELF_CHAT || self.id == format!("19:{me}_{me}@unq.gbl.spaces");
         let preview = self.last_message_preview.as_ref();
-        let preview_text = preview
-            .and_then(|p| p.body.as_ref())
-            .map(body_text)
-            .unwrap_or_default()
-            .replace('\n', " ");
+        let preview_is_message =
+            preview.is_some_and(|p| p.message_type.as_deref() == Some("message") && !p.is_deleted);
+        let preview_text = if preview.is_some_and(|p| p.is_deleted) {
+            "Message deleted".into()
+        } else if preview_is_message {
+            preview
+                .and_then(|p| p.body.as_ref())
+                .map(body_text)
+                .unwrap_or_default()
+                .replace('\n', " ")
+        } else if preview.is_some() {
+            "Conversation activity".into()
+        } else {
+            String::new()
+        };
         let preview_id = preview.and_then(|p| p.id.clone());
         let preview_mine = preview
             .and_then(|p| p.from.as_ref())
@@ -2105,7 +2121,11 @@ impl GraphChat {
             preview: preview_text,
             updated_at,
             preview_id,
-            preview_mine,
+            preview_mine: preview_is_message && preview_mine,
+            preview_is_message,
+            hidden: self.viewpoint.as_ref().is_some_and(|v| v.is_hidden),
+            unavailable: false,
+            is_meeting: self.chat_type.as_deref() == Some("meeting"),
             web_url: self.web_url,
             read_at: self.viewpoint.and_then(|v| v.last_message_read_date_time),
             members,
@@ -2119,6 +2139,8 @@ impl GraphChat {
 #[serde(rename_all = "camelCase")]
 struct GraphMessage {
     id: String,
+    message_type: Option<String>,
+    event_detail: Option<EventDetail>,
     created_date_time: String,
     last_modified_date_time: Option<String>,
     body: Body,
@@ -2128,6 +2150,12 @@ struct GraphMessage {
     attachments: Vec<Attachment>,
     #[serde(default)]
     reactions: Vec<GraphReaction>,
+}
+
+#[derive(Deserialize)]
+struct EventDetail {
+    #[serde(rename = "@odata.type")]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2252,8 +2280,30 @@ impl GraphMessage {
             created_at: self.created_date_time,
             mine: user.and_then(|user| user.id.as_deref()) == Some(me),
             deleted,
+            system: self
+                .message_type
+                .as_deref()
+                .is_some_and(|kind| kind != "message")
+                || self.event_detail.is_some(),
             ..Default::default()
         };
+        if message.system {
+            // Event XML is not message HTML. Keep a quiet activity row, never a user bubble.
+            if self.message_type.as_deref() == Some("systemEventMessage") {
+                message.text = match self.event_detail.and_then(|detail| detail.kind).as_deref() {
+                    Some("#microsoft.graph.membersAddedEventMessageDetail") => "Participants added",
+                    Some("#microsoft.graph.membersDeletedEventMessageDetail") => {
+                        "Participants removed"
+                    }
+                    Some("#microsoft.graph.chatRenamedEventMessageDetail") => "Chat renamed",
+                    Some("#microsoft.graph.callStartedEventMessageDetail") => "Call started",
+                    Some("#microsoft.graph.callEndedEventMessageDetail") => "Call ended",
+                    _ => "Conversation updated",
+                }
+                .into();
+            }
+            return message;
+        }
         if deleted {
             message.text = "Message deleted".into();
             message.markdown = "Message deleted".into();

@@ -11,6 +11,12 @@ pub(crate) struct ChatSummary {
     pub updated_at: String,
     pub preview_id: Option<String>,
     pub preview_mine: bool,
+    /// Only an ordinary message preview can imply unread activity.
+    pub preview_is_message: bool,
+    pub hidden: bool,
+    /// Absent from a successfully completed /me/chats listing; keep local user data.
+    pub unavailable: bool,
+    pub is_meeting: bool,
     pub web_url: Option<String>,
     pub members: usize,
     pub avatar_user: Option<String>,
@@ -56,6 +62,12 @@ impl Chat {
             read_revision: 0,
             history_cleared: 0,
         }
+    }
+
+    pub fn visible(&self) -> bool {
+        !(self.summary.hidden || self.summary.unavailable)
+            || !self.draft.is_empty()
+            || self.messages.iter().any(|m| m.delivery != Delivery::Sent)
     }
 
     pub fn merge_messages(&mut self, messages: Vec<Message>) -> Vec<Message> {
@@ -128,6 +140,7 @@ impl Chat {
             self.summary.updated_at = latest.created_at.clone();
             self.summary.preview_id = Some(latest.id.clone());
             self.summary.preview_mine = latest.mine;
+            self.summary.preview_is_message = latest.is_chat_message() && !latest.deleted;
         }
         added
     }
@@ -136,6 +149,9 @@ impl Chat {
     pub fn display_messages(&self) -> Vec<Message> {
         self.messages
             .iter()
+            .filter(|message| {
+                message.is_chat_message() || (message.system && !message.text.is_empty())
+            })
             .cloned()
             .map(|mut message| {
                 if let Some(pending) = self.pending.get(&message.id) {
@@ -149,22 +165,30 @@ impl Chat {
     }
 
     pub fn recount_unread(&mut self) {
-        let Some(read_at) = self.read_pending.as_ref().or(self.summary.read_at.as_ref()) else {
+        if self.summary.hidden || self.summary.unavailable || self.summary.is_self {
+            self.unread = 0;
             return;
+        }
+        let Some(read_at) = self.read_pending.as_ref().or(self.summary.read_at.as_ref()) else {
+            return; // Only known incoming messages can increment unread without a read marker.
         };
         let read_at = timestamp(read_at);
         self.unread = self
             .messages
             .iter()
             .filter(|m| {
-                !m.mine
+                m.is_chat_message()
+                    && !m.mine
                     && !m.deleted
                     && m.delivery == Delivery::Sent
                     && timestamp(&m.created_at) > read_at
             })
             .count();
         // Graph gives a read marker, not an unread count. History may be only partially cached.
-        if !self.summary.preview_mine && timestamp(&self.summary.updated_at) > read_at {
+        if self.summary.preview_is_message
+            && !self.summary.preview_mine
+            && timestamp(&self.summary.updated_at) > read_at
+        {
             self.unread = self.unread.max(1);
         }
     }
@@ -208,6 +232,8 @@ pub(crate) struct Message {
     pub modified_at: String,
     pub mine: bool,
     pub deleted: bool,
+    #[serde(default)]
+    pub system: bool,
     pub delivery: Delivery,
     #[serde(skip)]
     pub updating: bool,
@@ -215,7 +241,18 @@ pub(crate) struct Message {
     pub update_uncertain: bool,
 }
 
-/// Local send state of my messages; Microsoft's messages are always `Sent`.
+impl Message {
+    pub fn is_chat_message(&self) -> bool {
+        !self.system
+            && (self.deleted
+                || !self.text.trim().is_empty()
+                || !self.images.is_empty()
+                || !self.files.is_empty()
+                || self.quote.is_some())
+    }
+}
+
+/// Local send state only: `Sent` means accepted by Teams, not delivered/read by a recipient.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Delivery {
     #[default]
@@ -302,7 +339,9 @@ impl Message {
         } else {
             self.author_id == previous.author_id
         };
-        same_author
+        !self.system
+            && !previous.system
+            && same_author
             && self.mine == previous.mine
             && day_label(&self.created_at, offset) == day_label(&previous.created_at, offset)
             && match (

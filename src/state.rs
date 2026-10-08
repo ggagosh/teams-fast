@@ -61,7 +61,9 @@ pub(crate) struct ChatState {
     pub user_id: String,
     pub account: String,
     pub prefs: Settings,
-    pub next_chats: Option<String>,
+    /// Reconcile absences only after every page of one successful list request.
+    chat_scan: Option<(u64, HashSet<String>)>,
+    listed_chats: Option<HashSet<String>>,
     pub chats_loading: bool,
     pub baseline_ready: bool,
     pub quiet_chat_sync: bool,
@@ -181,7 +183,8 @@ impl ChatState {
                 tenant: "organizations".into(),
                 ..Default::default()
             },
-            next_chats: None,
+            chat_scan: None,
+            listed_chats: None,
             chats_loading: false,
             baseline_ready: false,
             quiet_chat_sync: false,
@@ -383,7 +386,8 @@ impl ChatState {
         self.selected = self.chats.first().map(|chat| chat.summary.id.clone());
         self.sign_in_page = None;
         self.search.clear();
-        self.next_chats = None;
+        self.chat_scan = None;
+        self.listed_chats = None;
         self.chats_loading = false;
         self.baseline_ready = false;
         self.name.clear();
@@ -431,6 +435,9 @@ impl ChatState {
             self.sign_in_page = None;
             self.error = None;
             self.baseline_ready = false;
+            self.chat_scan = None;
+            self.listed_chats = None;
+            self.chats_loading = false;
             self.watch_pending = None;
             self.pending_changes.clear();
             self.change_inflight = false;
@@ -591,12 +598,31 @@ impl ChatState {
             match event {
                 NoticeEvent::Open { epoch, chat_id } if epoch == self.epoch() => {
                     self.focus_requested = true;
-                    if self.chats.iter().any(|chat| chat.summary.id == chat_id) {
+                    if self
+                        .chats
+                        .iter()
+                        .any(|chat| chat.summary.id == chat_id && chat.visible())
+                    {
                         self.select_chat(chat_id.clone());
                         self.timelines.entry(chat_id).or_default().jump_to_bottom = true;
+                    } else if !chat_id.is_empty() {
+                        self.error = Some("This notification's conversation is hidden or no longer available in Teams. Refresh to check the current chat list.".into());
                     }
                 }
-                NoticeEvent::Error(error) => self.error = Some(error),
+                NoticeEvent::Error(error) => {
+                    if let Some(notices) = &mut self.notices {
+                        notices.status.clone_from(&error);
+                    }
+                    self.error = Some(error);
+                }
+                NoticeEvent::Status(status) => {
+                    if let Some(notices) = &mut self.notices {
+                        if self.error.as_ref() == Some(&notices.status) {
+                            self.error = None;
+                        }
+                        notices.status = status;
+                    }
+                }
                 _ => {}
             }
         }
@@ -632,6 +658,8 @@ impl ChatState {
                 self.baseline_ready = false;
                 self.notice_history = NoticeHistory::default();
                 self.photos.clear();
+                self.chat_scan = None;
+                self.listed_chats = None;
                 self.refresh_chats(None, false);
                 self.start_push();
                 if let Some(id) = self.selected.clone() {
@@ -644,9 +672,18 @@ impl ChatState {
                 background,
                 started_revision,
             } => {
-                self.chats_loading = false;
-                self.next_chats = next.clone();
-                for user in chats.iter().filter_map(|chat| chat.avatar_user.clone()) {
+                let Some((scan, seen)) = &mut self.chat_scan else {
+                    return;
+                };
+                if *scan != started_revision {
+                    return;
+                }
+                seen.extend(chats.iter().map(|chat| chat.id.clone()));
+                for user in chats
+                    .iter()
+                    .filter(|chat| !chat.hidden)
+                    .filter_map(|chat| chat.avatar_user.clone())
+                {
                     self.request_photo(&user);
                 }
                 for mut summary in chats {
@@ -660,13 +697,17 @@ impl ChatState {
                     {
                         if self.baseline_ready
                             && summary.preview_id.is_some()
-                            && summary.preview_id != chat.summary.preview_id
+                            && (summary.preview_id != chat.summary.preview_id
+                                || chat.summary.unavailable)
                             && let Some(id) = summary.preview_id.clone()
                         {
                             self.pending_changes
                                 .entry((summary.id.clone(), id))
                                 .or_insert((
-                                    !summary.preview_mine && !self.quiet_chat_sync,
+                                    summary.preview_is_message
+                                        && !summary.hidden
+                                        && !summary.preview_mine
+                                        && !self.quiet_chat_sync,
                                     false,
                                     None,
                                 ));
@@ -681,6 +722,7 @@ impl ChatState {
                             summary.preview.clone_from(&chat.summary.preview);
                             summary.preview_id.clone_from(&chat.summary.preview_id);
                             summary.preview_mine = chat.summary.preview_mine;
+                            summary.preview_is_message = chat.summary.preview_is_message;
                         }
                         chat.summary = summary;
                         chat.recount_unread();
@@ -697,26 +739,23 @@ impl ChatState {
                         self.chats.push(chat);
                     }
                 }
-                self.cache_dirty
-                    .extend(self.chats.iter().map(|c| c.summary.id.clone()));
-                self.sort_chats();
-                // Open the latest conversation, not the pinned (often empty) self chat.
-                if self.selected.is_none()
-                    && let Some(id) = self
-                        .chats
-                        .iter()
-                        .find(|chat| !chat.summary.is_self)
-                        .or(self.chats.first())
-                        .map(|chat| chat.summary.id.clone())
-                {
-                    self.select_chat(id);
-                }
-                if !background && let Some(next) = next {
-                    self.refresh_chats(Some(next), false);
+                if let Some(next) = next {
+                    self.refresh_chats(Some(next), background);
                 } else {
+                    let (_, seen) = self.chat_scan.take().unwrap();
+                    for chat in &mut self.chats {
+                        chat.summary.unavailable = !seen.contains(&chat.summary.id);
+                        chat.recount_unread();
+                    }
+                    self.listed_chats = Some(seen);
+                    self.chats_loading = false;
                     self.baseline_ready = true;
                     self.quiet_chat_sync = false;
                 }
+                self.cache_dirty
+                    .extend(self.chats.iter().map(|c| c.summary.id.clone()));
+                self.sort_chats();
+                self.select_visible_chat();
             }
             Event::Messages {
                 chat_id,
@@ -787,7 +826,6 @@ impl ChatState {
                         ms(now - created)
                     );
                 }
-                let first = notify && self.notice_history.first(&chat_id, &message.id);
                 let focused = self.focused;
                 let reading = self.selected.as_ref() == Some(&chat_id) && focused;
                 let at_bottom = self
@@ -800,6 +838,7 @@ impl ChatState {
                     self.chats.push(Chat::new(ChatSummary {
                         id: chat_id.clone(),
                         title: message.author.clone(),
+                        unavailable: true, // A push alone does not establish current visibility.
                         ..Default::default()
                     }));
                     if !self.chats_loading {
@@ -811,7 +850,19 @@ impl ChatState {
                     .iter_mut()
                     .find(|chat| chat.summary.id == chat_id)
                 {
-                    if notify && first && !message.mine && !message.deleted {
+                    if notify
+                        && message.is_chat_message()
+                        && !message.mine
+                        && !message.deleted
+                        && !chat.summary.hidden
+                        && !chat.summary.unavailable
+                        && !chat.summary.is_self
+                        // Unknown chats are not deduplicated until the list verifies visibility.
+                        && self.notice_history.first(&chat_id, &message.id)
+                        && chat.read_pending.as_ref().or(chat.summary.read_at.as_ref()).is_none_or(|read| {
+                            model::timestamp(&message.created_at) > model::timestamp(read)
+                        })
+                    {
                         if !reading || !at_bottom {
                             chat.unread += 1;
                         }
@@ -874,6 +925,7 @@ impl ChatState {
                     }
                     if chat.summary.preview_id.as_ref() == Some(&message_id) {
                         chat.summary.preview = "Message deleted".into();
+                        chat.summary.preview_is_message = false;
                     }
                     chat.pending.remove(&message_id);
                     chat.recount_unread();
@@ -965,6 +1017,13 @@ impl ChatState {
                     summary.updated_at = model::now_string();
                 }
                 let id = summary.id.clone();
+                // A newly created chat may not occur in an already-running paginated snapshot.
+                if let Some((_, seen)) = &mut self.chat_scan {
+                    seen.insert(id.clone());
+                }
+                if let Some(seen) = &mut self.listed_chats {
+                    seen.insert(id.clone());
+                }
                 if let Some(chat) = self.chats.iter_mut().find(|chat| chat.summary.id == id) {
                     chat.summary = summary;
                 } else {
@@ -1030,6 +1089,7 @@ impl ChatState {
                         self.error = Some(error.message);
                     }
                     Operation::Chats => {
+                        self.chat_scan = None; // A failed/partial list cannot establish absences.
                         self.chats_loading = false;
                         self.error = Some(error.message);
                     }
@@ -1234,14 +1294,15 @@ impl ChatState {
         let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == chat_id) else {
             return;
         };
-        if chat.pending.contains_key(message_id) {
+        if chat.summary.unavailable || chat.pending.contains_key(message_id) {
             return;
         }
-        let Some(message) = chat
-            .messages
-            .iter_mut()
-            .find(|m| m.id == message_id && !m.deleted && m.delivery == model::Delivery::Sent)
-        else {
+        let Some(message) = chat.messages.iter_mut().find(|m| {
+            m.id == message_id
+                && m.is_chat_message()
+                && !m.deleted
+                && m.delivery == model::Delivery::Sent
+        }) else {
             return;
         };
         if !matches!(change, MessageChange::Reaction { .. }) && !message.mine {
@@ -1311,8 +1372,12 @@ impl ChatState {
                         self.mode = Mode::Offline;
                         self.name = name;
                     }
-                    for cached in chats {
+                    for mut cached in chats {
                         let id = cached.summary.id.clone();
+                        if let Some(seen) = &self.listed_chats {
+                            cached.summary.unavailable = !seen.contains(&id);
+                            self.cache_dirty.insert(id.clone());
+                        }
                         let index = self
                             .chats
                             .iter()
@@ -1329,16 +1394,8 @@ impl ChatState {
                         chat.recount_unread();
                     }
                     self.sort_chats();
-                    if self.selected.is_none()
-                        && let Some(id) = self
-                            .chats
-                            .iter()
-                            .find(|c| !c.summary.is_self)
-                            .or(self.chats.first())
-                            .map(|c| c.summary.id.clone())
-                    {
-                        self.select_chat(id);
-                    } else if let Some(id) = self.selected.clone() {
+                    self.select_visible_chat();
+                    if let Some(id) = self.selected.clone() {
                         self.cached_history(&id);
                     }
                 }
@@ -1366,6 +1423,10 @@ impl ChatState {
                 } => {
                     let sent = saved
                         && self.mode == Mode::Live
+                        && self
+                            .chats
+                            .iter()
+                            .any(|chat| chat.summary.id == chat_id && !chat.summary.unavailable)
                         && self.request(Command::Send {
                             chat_id: chat_id.clone(),
                             local_id: message.id.clone(),
@@ -1481,6 +1542,7 @@ impl ChatState {
                 .retain(|m| m.delivery != model::Delivery::Sent);
             chat.summary.preview.clear();
             chat.summary.preview_id = None;
+            chat.summary.preview_is_message = false;
             chat.loaded = false;
             chat.revision = chat.revision.wrapping_add(1);
             chat.history_cleared = chat.revision;
@@ -1505,7 +1567,13 @@ impl ChatState {
         let Some(chat) = self.chats.iter_mut().find(|c| c.summary.id == id) else {
             return false;
         };
-        if chat.loading || !chat.loaded || chat.summary.is_self {
+        if chat.loading
+            || !chat.loaded
+            || chat.summary.is_self
+            || chat.summary.hidden
+            || chat.summary.unavailable
+        {
+            self.cancel_read();
             return false;
         }
         let Some(marker) = chat
@@ -1654,16 +1722,56 @@ impl ChatState {
         });
     }
     pub fn refresh_chats(&mut self, next: Option<String>, background: bool) {
+        if next.is_none() {
+            if self.chat_scan.is_some() {
+                return;
+            }
+            self.chat_scan = Some((self.revision, HashSet::new()));
+        }
+        let Some((started_revision, _)) = &self.chat_scan else {
+            return;
+        };
         if self.request(Command::Chats {
             next,
             background,
-            started_revision: self.revision,
+            started_revision: *started_revision,
         }) {
             self.chats_loading = true;
+        } else {
+            self.chat_scan = None;
+            self.chats_loading = false;
         }
     }
+
+    fn select_visible_chat(&mut self) {
+        if let Some(chat) = self
+            .chats
+            .iter()
+            .find(|chat| chat.visible() && self.selected.as_ref() == Some(&chat.summary.id))
+        {
+            if chat.summary.hidden || chat.summary.unavailable {
+                self.cancel_read();
+            }
+            return;
+        }
+        self.cancel_read();
+        self.selected = None;
+        let chat = self
+            .chats
+            .iter()
+            .find(|chat| chat.visible() && !chat.summary.is_self)
+            .or_else(|| self.chats.iter().find(|chat| chat.visible()));
+        if let Some(chat) = chat {
+            self.select_chat(chat.summary.id.clone());
+        }
+    }
+
     pub fn select_chat(&mut self, id: String) {
-        if !self.chats.iter().any(|chat| chat.summary.id == id) {
+        if !self
+            .chats
+            .iter()
+            .any(|chat| chat.summary.id == id && chat.visible())
+        {
             return;
         }
         let recent = self
@@ -1706,7 +1814,7 @@ impl ChatState {
         if self
             .chats
             .iter()
-            .any(|chat| chat.summary.id == id && chat.loading)
+            .any(|chat| chat.summary.id == id && (chat.loading || chat.summary.unavailable))
         {
             return;
         }
@@ -1760,7 +1868,10 @@ impl ChatState {
             return;
         };
         let chat = &self.chats[index];
-        if chat.draft.trim().is_empty() || !matches!(self.mode, Mode::Live | Mode::Demo) {
+        if chat.summary.unavailable
+            || chat.draft.trim().is_empty()
+            || !matches!(self.mode, Mode::Live | Mode::Demo)
+        {
             return;
         }
         let text = chat.draft.clone();

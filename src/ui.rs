@@ -258,7 +258,7 @@ impl TeamsFast {
             .state
             .chats
             .iter()
-            .filter(|chat| chat.summary.title.to_lowercase().contains(&query))
+            .filter(|chat| chat.visible() && chat.summary.title.to_lowercase().contains(&query))
             .map(|chat| {
                 let id = chat.summary.id.clone();
                 let selected = self.state.selected.as_ref() == Some(&id);
@@ -449,7 +449,8 @@ impl TeamsFast {
                         )
                     })
                     .when(
-                        self.state.chats.is_empty() && !self.state.chats_loading,
+                        !self.state.chats.iter().any(|chat| chat.visible())
+                            && !self.state.chats_loading,
                         |list| {
                             list.child(
                                 div()
@@ -521,22 +522,31 @@ impl TeamsFast {
                             div()
                                 .text_xl()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("Your conversations"),
+                                .child(if self.state.mode == Mode::Live { "No visible conversations" } else { "Your conversations" }),
                         )
                         .content(
-                            EmptyContent::new()
-                                .child("Connect your work account to start chatting."),
+                            EmptyContent::new().child(if self.state.mode == Mode::Live {
+                                "Hidden chats and conversations no longer returned by Teams are not listed."
+                            } else {
+                                "Connect your work account to start chatting."
+                            }),
                         )
                         .child(
                             Button::new("connect-empty")
                                 .primary()
-                                .label(if self.state.mode == Mode::SigningIn {
+                                .label(if self.state.mode == Mode::Live {
+                                    "Refresh"
+                                } else if self.state.mode == Mode::SigningIn {
                                     "Continue sign-in"
                                 } else {
                                     "Connect account"
                                 })
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_connection(window, cx)
+                                    if this.state.mode == Mode::Live {
+                                        this.refresh(window, cx);
+                                    } else {
+                                        this.open_connection(window, cx);
+                                    }
                                 })),
                         ),
                 )
@@ -545,8 +555,16 @@ impl TeamsFast {
         let id = chat.summary.id.clone();
         let title = chat.summary.title.clone();
         let header_photo = self.state.photo(chat.summary.avatar_user.as_deref());
-        let subtitle = if self.state.mode == Mode::Demo {
+        let subtitle = if chat.summary.unavailable {
+            "Unavailable in Teams · local data kept".into()
+        } else if chat.summary.hidden {
+            "Hidden in Teams · local data kept".into()
+        } else if self.state.mode == Mode::Demo {
             "Local demo".into()
+        } else if chat.summary.is_meeting {
+            "Meeting chat".into()
+        } else if chat.summary.members >= 25 {
+            "25+ participants".into()
         } else if chat.summary.members > 2 {
             format!("{} participants", chat.summary.members)
         } else {
@@ -556,7 +574,8 @@ impl TeamsFast {
         let loading = chat.loading;
         let older = chat.next_messages.is_some();
         let send_error = chat.send_error.clone();
-        let can_send = !chat.draft.trim().is_empty()
+        let can_send = !chat.summary.unavailable
+            && !chat.draft.trim().is_empty()
             && (self.state.mode == Mode::Demo
                 || (self.state.mode == Mode::Live && self.state.store_ready));
         let web_url =
@@ -573,8 +592,10 @@ impl TeamsFast {
                 offset: self.state.offset,
                 chat_id: id.clone(),
                 chat_url: web_url.clone(),
+                demo: self.state.mode == Mode::Demo,
                 view: cx.entity().downgrade(),
-                can_mutate: matches!(self.state.mode, Mode::Demo | Mode::Live),
+                can_mutate: !chat.summary.unavailable
+                    && matches!(self.state.mode, Mode::Demo | Mode::Live),
             };
             MessageScroller::new(
                 SharedString::from(format!("transcript-{id}")),
@@ -742,7 +763,9 @@ impl TeamsFast {
                 .child(
                     div()
                         .flex_1()
+                        .min_w_0()
                         .text_sm()
+                        .whitespace_normal()
                         .text_color(cx.theme().danger)
                         .child(error.clone()),
                 )
@@ -771,6 +794,7 @@ struct Rows {
     offset: UtcOffset,
     chat_id: String,
     chat_url: Option<String>,
+    demo: bool,
     view: WeakEntity<TeamsFast>,
     can_mutate: bool,
 }
@@ -807,6 +831,20 @@ fn react(
 fn message(rows: &Rows, index: usize, cx: &mut App) -> AnyElement {
     let (messages, offset) = (&rows.messages, rows.offset);
     let value = &messages[index];
+    if value.system {
+        return h_flex()
+            .justify_center()
+            .py_2()
+            .text_size(px(12.))
+            .text_color(cx.theme().muted_foreground)
+            .child(format!(
+                "{} · {} · {}",
+                model::day_label(&value.created_at, offset),
+                value.time_label(offset),
+                value.text
+            ))
+            .into_any_element();
+    }
     let photo = rows.photos.get(&value.author_id).cloned().flatten();
     let previous = index.checked_sub(1).and_then(|i| messages.get(i));
     let next = messages.get(index + 1);
@@ -1117,9 +1155,12 @@ fn message(rows: &Rows, index: usize, cx: &mut App) -> AnyElement {
                             }
                         } else {
                             match value.delivery {
+                                Delivery::Sent if value.mine && !rows.demo => {
+                                    format!("{} · Sent to Teams", value.time_label(offset))
+                                }
                                 Delivery::Sent => value.time_label(offset),
                                 Delivery::Sending => "Sending…".into(),
-                                Delivery::Unconfirmed => "Not confirmed".into(),
+                                Delivery::Unconfirmed => "Send not confirmed".into(),
                             }
                         }),
                 )

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.5.0]
+
+### Fixed
+- System events no longer create unread badges, desktop alerts, or empty “Teams” message bubbles.
+- Hidden chats stay out of the sidebar and switcher; complete refreshes remove stale cached entries without discarding drafts or unconfirmed sends.
+- Notification settings distinguish denied macOS permission from bundle or posting errors, show test-request status, and link to macOS Notification Settings.
+
+### Changed
+- Closing the main window hides TeamsFast and keeps updates running; reopen it from the Dock or a notification, and use ⌘Q to quit safely.
+- Outgoing messages show **Sent to Teams**, not a recipient delivery/read claim. Typing and recipient receipts remain unavailable through the supported Graph interface.
+
+### Upgrade notes
+- The red close button now keeps TeamsFast running; use ⌘Q to quit. Existing drafts, encrypted history and Keychain entries are preserved.
+- macOS notification permission is separate from the in-app switch. Enable TeamsFast in System Settings → Notifications if permission was denied.
+
 ## [0.4.2]
 
 ### Fixed

@@ -32,14 +32,23 @@ Check the runnable app:
 3. Check Georgian, emoji, long content, selection/copying, inline links, attachment cards, and keyboard focus.
 4. Open Settings with Cmd+, and check Account, Notifications, Appearance, and Advanced, including the light/dark switch.
 5. Check older-history prepending, scrolling, pending sends, and visible errors.
-6. In the bundled app, use **Send test notification** and check OS permission, delivery, and click routing separately.
-7. Complete the signed-in checks in [the milestone](initial-milestone.md) using an approved conversation.
+6. In the bundled app, use **Send test notification** and check OS permission, delivery, and click routing separately. The in-app switch does not grant OS permission. Settings now reports whether macOS denied permission, rejected posting, or accepted the request, and offers **Open macOS Notification Settings…**. Accepted does not mean displayed: check Focus and alert presentation too.
+7. Close the main window with its red button. Confirm the app stays running without marking hidden-window activity read; reopen from the Dock and verify drafts and open edit text. ⌘Q must still use the save-before-quit gate.
+8. Complete the signed-in checks in [the milestone](initial-milestone.md) using an approved conversation.
 
 ## Window initialization and startup acceptance
 
 The content constructor passed to `gpui_kit::open_window` runs **before** Kit installs the window Root and component dialog state. The initial `TeamsFast::synchronize` is deferred with `cx.defer_in`; calling it inside the constructor crashed when a remembered account triggered dialog cleanup. Account-switch cleanup remains in the shared synchronization path after initialization.
 
 Check three native startup paths: demo, a fresh profile, and a remembered account with `cached_account` matching the tenant/client prefix. Demo/fresh startup alone does not exercise restoration. A temporary isolated-home fixture with synthetic account metadata reproduced the released 0.4.1 abort and survived startup with the fix; no tenant history or credential reset was needed. The fixed, locally Developer-ID-signed updater bundle passed all three startup checks, `just check`, updater-enabled Clippy and all 11 existing tests. This is launch verification, not full Graph/notification or update-install acceptance. No permanent tests were added.
+
+## Chat visibility, activity and close-to-hide acceptance
+
+- **Local checks:** `just check`, updater-enabled Clippy and all 11 existing tests pass. Temporary isolated-source fixtures reproduce a false unread badge on the published source (system-event preview yields 1) and pass on the fix (0). They also cover ordinary/deleted-message previews, hidden/local-work visibility, event and legacy cache decoding, complete multi-page background refreshes, partial failures, stale replies, late cache arrival, unavailable-chat send protection, read-intent cancellation, and deferring a new chat's first message until visibility is confirmed without counting it twice. No permanent tests or tenant data were added.
+- **Native UI:** an Apple-Development-signed bundle survived demo, fresh and synthetic remembered-account startup. PID-targeted native close-button actions hid the app without terminating it; Dock-equivalent reopen restored the same process/window, and native ⌘Q exited. Demo rendering and Settings opening were inspected. Background input did not establish a draft, so native draft/edit-text retention remains a manual acceptance item, not a claimed pass.
+- **Release preflight (0.5.0):** default/updater-enabled checks and all 11 tests passed again after the version bump. The locally Developer-ID-signed, updater-enabled release bundle survived remembered-account, fresh and demo startup. This is not Intel runtime or full update-install/relaunch acceptance.
+- **Relay protocol:** not rerun; relay code and protocol are unchanged.
+- **Live Graph / OS:** the development bundle displayed the new explicit macOS permission-denied error; permission was not changed. Banner delivery/click routing, the installed release's permission state, live hidden-chat reconciliation and other-device read parity remain unverified. No real Teams messages were sent or modified. See [chat status](chat-status.md) for the supported API boundary.
 
 ## Encrypted history and optimistic updates
 

@@ -202,7 +202,7 @@ impl TeamsFast {
         let mut subscriptions = subscriptions;
         subscriptions.push(cx.on_app_quit(|this, _| {
             // OS-initiated termination bypasses our Quit action. GPUI allows only 200 ms here;
-            // normal Quit, window close and Sparkle restart use the acknowledged gate below.
+            // normal Quit and Sparkle restart use the acknowledged gate below.
             let response = this.state.save_before_exit().ok();
             async move {
                 if let Some(response) = response {
@@ -250,8 +250,14 @@ impl TeamsFast {
     /// Register once, including app-global actions so menus work from Settings and modal inputs.
     pub fn register_lifecycle(view: &Entity<Self>, window: &mut Window, cx: &mut App) {
         let weak = view.downgrade();
-        window.on_window_should_close(cx, move |window, cx| {
-            let _ = weak.update(cx, |this, cx| this.request_exit(window, cx));
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = weak.update(cx, |this, cx| {
+                if !this.exiting {
+                    this.state.focused = false;
+                    this.state.mark_read("", false);
+                    cx.hide(); // Keep the window (including drafts and open edit dialogs) alive.
+                }
+            });
             false
         });
         let handle = window.window_handle();
@@ -295,6 +301,8 @@ impl TeamsFast {
         if self.exiting {
             return;
         }
+        cx.activate(true);
+        window.activate_window();
         if window.has_active_dialog(cx) {
             self.state.error = Some(if self.updates.restart_pending() {
                 "Finish or dismiss the open dialog, then choose Check for Updates to retry the restart."
@@ -323,7 +331,7 @@ impl TeamsFast {
         window.open_dialog(cx, move |dialog, _, _| {
             let weak = weak.clone();
             dialog
-                .title("Saving before closing…")
+                .title("Saving before quitting…")
                 .close_button(false)
                 .keyboard(false)
                 .overlay_closable(false)
@@ -532,6 +540,7 @@ impl TeamsFast {
         }
         if self.state.focus_requested {
             self.state.focus_requested = false;
+            cx.activate(true);
             window.activate_window();
             self.composer.focus_handle(cx).focus(window, cx);
         }

@@ -47,13 +47,30 @@ fn request_permission() {
         );
 }
 
+fn permission_to_post() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        notify_rust::check_bundle().map_err(|_| {
+            "Notifications require the TeamsFast.app bundle; a terminal binary cannot post them.".to_owned()
+        })?;
+        match notify_rust::request_auth_blocking() {
+            Ok(true) => {}
+            Ok(false) => return Err("macOS has not allowed notifications for TeamsFast. Enable Allow Notifications in System Settings → Notifications → TeamsFast, then try again.".into()),
+            Err(error) => return Err(format!("Could not check macOS notification permission: {error}.")),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) enum NoticeEvent {
     Open { epoch: u64, chat_id: String },
     Error(String),
+    Status(String),
 }
 
 pub(crate) struct Notifications {
     pub events: Receiver<NoticeEvent>,
+    pub status: String,
     sender: mpsc::Sender<NoticeEvent>,
     active: Arc<AtomicUsize>,
     wake: Wake,
@@ -66,6 +83,7 @@ impl Notifications {
         request_permission();
         Self {
             events,
+            status: "macOS permission is separate from the Desktop notifications switch.".into(),
             sender,
             active: Arc::new(AtomicUsize::new(0)),
             wake,
@@ -75,6 +93,10 @@ impl Notifications {
         // Bound response observers: macOS can retain notifications for a long time.
         if self.active.fetch_add(1, Ordering::Relaxed) >= 8 {
             self.active.fetch_sub(1, Ordering::Relaxed);
+            let _ = self.sender.send(NoticeEvent::Error(
+                "Notification checks are busy. Try again in a minute.".into(),
+            ));
+            let _ = self.wake.try_send(());
             return;
         }
         let active = Arc::clone(&self.active);
@@ -88,8 +110,15 @@ impl Notifications {
                 .appname("TeamsFast")
                 .timeout(60_000)
                 .action("default", "Open chat");
-            match notice.show() {
+            // Wait for permission off the UI thread before posting. A denied request is not
+            // a missing bundle, and an accepted request is not proof that a banner appeared.
+            let result = permission_to_post().and_then(|()| notice.show().map_err(|error| {
+                format!("macOS could not accept the notification: {error}. Check System Settings → Notifications → TeamsFast.")
+            }));
+            match result {
                 Ok(handle) => {
+                    let _ = sender.send(NoticeEvent::Status("macOS accepted the notification request. Focus and notification settings can still hide its banner.".into()));
+                    let _ = wake.try_send(());
                     handle.wait_for_action(|action| {
                         if action == "default" {
                             let _ = sender.send(NoticeEvent::Open { epoch, chat_id });
@@ -97,8 +126,8 @@ impl Notifications {
                         }
                     });
                 }
-                Err(_) => {
-                    let _=sender.send(NoticeEvent::Error("Notifications are unavailable. On macOS, open the bundled app and allow notifications in System Settings.".into()));
+                Err(error) => {
+                    let _ = sender.send(NoticeEvent::Error(error));
                     let _ = wake.try_send(());
                 }
             }

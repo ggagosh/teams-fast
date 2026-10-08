@@ -113,6 +113,10 @@ impl Render for PreferencesView {
         let account_action = self.owner.clone();
         let connect_action = self.owner.clone();
         let test_notice = self.owner.clone();
+        let notification_status = app.state.notices.as_ref().map_or_else(
+            || "Notifications are unavailable in this session.".to_owned(),
+            |notices| notices.status.clone(),
+        );
         let status = app.status().0.to_owned();
         let main_window = app.main_window;
         let account = SettingPage::new("Account")
@@ -158,12 +162,18 @@ impl Render for PreferencesView {
                 .item(toggle(&self.owner,"Desktop notifications","Notify for new messages while TeamsFast is running.",|p|p.notifications,|p,v|p.notifications=v))
                 .item(toggle(&self.owner,"Message previews","Include the sender and message text in alerts.",|p|p.notification_previews,|p,v|p.notification_previews=v))
                 .item(toggle(&self.owner,"Quiet mode","Keep receiving messages without desktop alerts.",|p|p.quiet,|p,v|p.quiet=v))
+                .item(SettingItem::render(move|_,_,cx| {
+                    v_flex().gap_3()
+                        .child(div().text_sm().text_color(cx.theme().muted_foreground).child(notification_status.clone()))
+                        .child(Button::new("notification-settings").label("Open macOS Notification Settings…")
+                            .on_click(|_,_,cx| cx.open_url("x-apple.systempreferences:com.apple.preference.notifications")))
+                }))
                 .item(SettingItem::render(move|_,_,_|{
                     let test_notice=test_notice.clone();
                     Button::new("test-notification").label("Send test notification").on_click(move|_,_,cx|{
                         let _=test_notice.update(cx,|this,_|{
                             if let Some(notices)=&this.state.notices {
-                                notices.show(this.state.epoch(),this.state.selected.clone().unwrap_or_default(),"TeamsFast".into(),"Notifications are ready. Click to return to your conversation.".into());
+                                notices.show(this.state.epoch(),this.state.selected.clone().unwrap_or_default(),"TeamsFast notification test".into(),"Click to return to your conversation.".into());
                             }
                         });
                     })

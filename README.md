@@ -32,7 +32,7 @@ Requirements: macOS 11 or later and a Microsoft 365 work or school account in a 
 - Native notifications that open the chat when clicked
 - Light and dark appearance, Georgian and emoji text, a unified macOS window
 
-Not included: calls, meetings, channels, sending files, rich-text editing, and local message search.
+Not included: calls, meeting participation, channels, sending files, rich-text editing, and local message search. Existing meeting chats can appear in the chat list. Typing indicators and recipient delivery/read receipts are not exposed by the supported Graph interface; **Sent to Teams** confirms message creation only. See [chat status](docs/chat-status.md).
 
 ## Keyboard navigation
 
@@ -40,6 +40,7 @@ Not included: calls, meetings, channels, sending files, rich-text editing, and l
 - **⌘⇧P** opens app commands; **⌘/** shows shortcuts.
 - **⌘N** starts a chat, **⌘R** refreshes, **⌘,** opens Settings.
 - **⌘⇧F** focuses the sidebar filter. ⌘F is reserved for future message search.
+- The red close button hides the app, keeping live updates running. Reopen from the Dock; **⌘Q** saves and quits.
 
 ## How it works
 
